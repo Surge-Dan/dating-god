@@ -13,3 +13,8 @@
 - 修改引擎、内容或页面操作时运行 `node --test tests/dating-simulator.test.cjs tests/dating-page.test.cjs`。
 - 修改 Skill 入口或元数据时执行可用的 Skill 规范校验。修改文档时核对链接和功能描述。
 - 浏览器实测与 Node 自动测试分别说明，报告实际覆盖范围。
+
+## README排版
+
+- 正文中英文、数字之间不额外插入空格，标题适当使用emoji。保留Markdown语法、命令及英文名称内部的必要空格。
+- 功能说明按实际实现编写，SOP覆盖开局、现场、暂停、重演、回看与下载，保持简洁。
