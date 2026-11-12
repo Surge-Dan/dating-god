@@ -1,0 +1,14 @@
+# Local design draft retained outside the published product.
+/dating之神-产品方案.md
+
+# Local inputs, generated exports, and credentials.
+/output/
+/outputs/
+.env
+.env.*
+!.env.example
+*.log
+node_modules/
+__pycache__/
+.DS_Store
+Thumbs.db

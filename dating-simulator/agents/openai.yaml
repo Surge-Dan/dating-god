@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dating 之神 · 见面之后"
+  short_description: "赴一场独立的虚构成年约会，体验不同选择，并按需带走回看与个人卡片"
+  default_prompt: "使用 $dating-simulator 开始一场约会。"
