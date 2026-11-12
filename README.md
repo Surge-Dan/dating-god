@@ -1,6 +1,6 @@
 <div align="center">
 
-# 💘Dating之神·Dating God
+# 💘Dating之神 · Dating God
 
 ### 给当代恋爱练习生的赛博约会Skill
 
