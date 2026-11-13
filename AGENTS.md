@@ -10,7 +10,7 @@
 
 ## 验证
 
-- 修改引擎、内容或页面操作时运行 `node --test tests/dating-simulator.test.cjs tests/dating-page.test.cjs`。
+- 修改引擎、内容或页面操作时运行 `node --test tests/dating-god.test.cjs tests/dating-page.test.cjs`。
 - 修改 Skill 入口或元数据时执行可用的 Skill 规范校验。修改文档时核对链接和功能描述。
 - 浏览器实测与 Node 自动测试分别说明，报告实际覆盖范围。
 

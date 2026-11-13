@@ -1,8 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const content = require("../dating-simulator/assets/content.js");
-const engine = require("../dating-simulator/assets/engine.js");
-const report = require("../dating-simulator/assets/report.js");
+const content = require("../dating-god/assets/content.js");
+const engine = require("../dating-god/assets/engine.js");
+const report = require("../dating-god/assets/report.js");
 
 const config = (scene = "S02", extra = {}) => ({
   adult: true, scene, presentation: "any", player: "unspecified", avoid: [], seed: 7, ...extra,

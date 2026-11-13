@@ -28,5 +28,5 @@
 回归命令
 
 ```powershell
-node --test tests/dating-simulator.test.cjs tests/dating-page.test.cjs
+node --test tests/dating-god.test.cjs tests/dating-page.test.cjs
 ```

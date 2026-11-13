@@ -4,7 +4,7 @@
 
 ### 给当代恋爱练习生的赛博约会Skill
 
-[![Platform Codex](https://img.shields.io/badge/Platform-Codex-111827.svg)](dating-simulator/SKILL.md)
+[![Platform Codex](https://img.shields.io/badge/Platform-Codex-111827.svg)](dating-god/SKILL.md)
 [![Local first](https://img.shields.io/badge/Runtime-Local--first-934357.svg)](#data-notes)
 [![HTML and SVG](https://img.shields.io/badge/Export-HTML%20%2B%20SVG-b77863.svg)](#takeaways)
 
@@ -23,7 +23,7 @@
 把下面这段话发送给支持本地Skill的助手。
 
 ```text
-请从以下仓库安装dating-simulator。
+请从以下仓库安装dating-god。
 https://github.com/Surge-Dan/dating-god
 保留完整的Skill目录及其中的assets、agents和references。
 ```
@@ -31,12 +31,12 @@ https://github.com/Surge-Dan/dating-god
 安装后，在新聊天里说。
 
 ```text
-使用$dating-simulator，开始一场约会。
+使用$dating-god，开始一场约会。
 ```
 
 助手会尝试打开约会网页，并提供本地入口。支持网页导航的桌面宿主可直接打开，其他环境需要在能访问Skill文件的浏览器里手动打开。
 
-想先试玩，可以下载整个仓库，在浏览器中打开`dating-simulator/assets/index.html`。保持页面与配套文件的目录结构，即可进入，无需安装依赖或配置APIKey。
+想先试玩，可以下载整个仓库，在浏览器中打开`dating-god/assets/index.html`。保持页面与配套文件的目录结构，即可进入，无需安装依赖或配置APIKey。
 
 ## 🪄从开场到散场，怎么玩
 
@@ -129,22 +129,22 @@ https://github.com/Surge-Dan/dating-god
 
 |入口|内容|
 |---|---|
-|[SKILL.md](dating-simulator/SKILL.md)|触发、网页启动与结束规则|
-|[网页入口](dating-simulator/assets/index.html)|下载完整仓库后在本地浏览器打开|
-|[content.js](dating-simulator/assets/content.js)|角色、场景、动作和条件变化|
-|[engine.js](dating-simulator/assets/engine.js)|匹配、时间、边界、约定与重演|
-|[report.js](dating-simulator/assets/report.js)|HTML回看与SVG卡片生成|
-|[引擎约定](dating-simulator/references/engine.md)|状态和扩展内容的规则|
-|[回看规则](dating-simulator/references/review.md)|证据、确认与分享范围|
+|[SKILL.md](dating-god/SKILL.md)|触发、网页启动与结束规则|
+|[网页入口](dating-god/assets/index.html)|下载完整仓库后在本地浏览器打开|
+|[content.js](dating-god/assets/content.js)|角色、场景、动作和条件变化|
+|[engine.js](dating-god/assets/engine.js)|匹配、时间、边界、约定与重演|
+|[report.js](dating-god/assets/report.js)|HTML回看与SVG卡片生成|
+|[引擎约定](dating-god/references/engine.md)|状态和扩展内容的规则|
+|[回看规则](dating-god/references/review.md)|证据、确认与分享范围|
 |[tests/](tests/)|状态、导出与页面事件测试|
 
 在仓库根目录使用Node.js18或更高版本运行。
 
 ```powershell
-node --test tests/dating-simulator.test.cjs tests/dating-page.test.cjs
+node --test tests/dating-god.test.cjs tests/dating-page.test.cjs
 ```
 
-测试与审查范围见[对抗审查记录](dating-simulator-对抗审查.md)。
+测试与审查范围见[对抗审查记录](dating-god-对抗审查.md)。
 
 ## 💌反馈与共建
 

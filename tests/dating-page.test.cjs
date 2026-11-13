@@ -30,7 +30,7 @@ function openPage() {
     revokeObjectURL: (key) => files.delete(key),
   };
   const context = { window: {}, document, crypto: webcrypto, URL, Blob, setTimeout: () => {} };
-  const dir = resolve(__dirname, "../dating-simulator/assets");
+  const dir = resolve(__dirname, "../dating-god/assets");
   const index = readFileSync(resolve(dir, "index.html"), "utf8");
   for (const [, script] of index.matchAll(/<script defer src="([^"]+)"/g)) {
     runInNewContext(readFileSync(resolve(dir, script), "utf8"), context, { filename: script });
