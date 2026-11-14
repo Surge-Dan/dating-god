@@ -21,6 +21,8 @@
       (Object.hasOwn(interests, config.interest) && role.interests.includes(config.interest) ? 1 : 0);
     return roles.filter((role) =>
       role.age >= 18 && role.scenes.includes(scene.id) && role.players.includes(config.player) &&
+      (config.player !== "man" || role.presentation === "woman") &&
+      (config.player !== "woman" || role.presentation === "man") &&
       (["any", "unspecified"].includes(config.presentation) || role.presentation === config.presentation)
     ).sort((a, b) => score(b) - score(a) || mix(seed, a.id) - mix(seed, b.id));
   }

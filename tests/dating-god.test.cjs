@@ -34,6 +34,17 @@ test("hard topic exclusions remove actions without blocking the scene", () => {
   assert.equal(run.events.some((event) => event.tags.includes("relationship")), false);
 });
 
+test("player viewpoint enforces opposite-gender matching even with a broad preference", () => {
+  for (const [player, expected] of [["man", "woman"], ["woman", "man"]]) {
+    for (const scene of content.scenes) {
+      const roles = engine.match(config(scene.id, { player }));
+      assert.ok(roles.length);
+      assert.ok(roles.every(role => role.presentation === expected));
+      assert.deepEqual(engine.match(config(scene.id, { player, presentation: player })), []);
+    }
+  }
+});
+
 test("same opening branches into different locations and opportunities", () => {
   const run = setup("S02", "R01");
   const wait = move(run, "wait");

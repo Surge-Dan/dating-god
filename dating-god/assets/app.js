@@ -8,6 +8,59 @@
   const esc = (value = "") => String(value).replace(/[&<>"']/g, (char) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 
+  let modelMode = false;
+  let session = null;
+  let busy = false;
+  let generation = 0;
+  let utterance = "";
+  let modelOpening;
+  let retryTurn = null;
+  async function api(path, body) {
+    const response = await fetch(path, body ? {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)} : {});
+    const value = await response.json();
+    if (!response.ok) throw new Error(value.error?.message || "本地服务请求失败，请重试。");
+    return value;
+  }
+  async function modelRequest(path, body, done) {
+    if (busy) return;
+    busy = true;
+    const ticket = ++generation;
+    if (screen === "live") show("live");
+    try {
+      const value = await api(path, body);
+      if (ticket !== generation) return;
+      session = {sessionId:value.sessionId, version:value.version};
+      run = value.run;
+      busy = false;
+      done(value);
+    } catch (error) {
+      if (ticket !== generation) return;
+      busy = false;
+      if (screen === "live") show("live", error.message);
+      else status.textContent = error.message;
+    }
+  }
+  async function control(command, extra = {}) {
+    ++generation;
+    retryTurn = null;
+    busy = false;
+    if (!session) return;
+    return modelRequest("/api/control", {sessionId:session.sessionId, command, ...extra}, () => {
+      if (command === "end") finish();
+      else show("live");
+    });
+  }
+  function sendModel(payload) {
+    if (!session || busy || run.phase !== "live") return;
+    const identity = JSON.stringify({...session, ...payload});
+    if (!retryTurn || retryTurn.identity !== identity) retryTurn = {identity, requestId:crypto.randomUUID()};
+    return modelRequest("/api/turn", {...session, requestId:retryTurn.requestId, ...payload}, () => {
+      retryTurn = null;
+      utterance = "";
+      if (run.phase === "ended") finish();
+      else show("live");
+    });
+  }
   let screen;
   let config;
   let run;
@@ -20,8 +73,9 @@
   let cardPreviewUrl;
 
   function reset(next = "cover") {
+    ++generation; retryTurn = null; busy = false; session = null; modelMode = false; utterance = "";
     config = {
-      adult: false, presentation: "unspecified", player: "unspecified", traits: [],
+      mode: "mellow", adult: false, presentation: "unspecified", player: "unspecified", traits: [],
       interest: "", scene: "S02", avoid: [], nickname: "", expectation: "",
       surprise: false, guidance: false, seed: crypto.getRandomValues(new Uint32Array(1))[0],
     };
@@ -51,7 +105,7 @@
       <h1 tabindex="-1">见面之后</h1>
       <p class="deck">今晚的事，留在这一场。</p>
       <p class="cover-note">赴一场虚构的成年约会。你决定往哪走、聊到哪里，也可以随时离开。散场后，想回看再把那一刻带走。</p>
-      ${button("start", "开启一场约会", "primary")}
+      ${button("start-model", "模型自由互动", "primary")}${button("start", "离线体验")}<p class="cover-note">模型模式通过本地服务连接模型；离线体验使用预写剧情。模型模式会将本场设置和对话发送至你配置的模型服务。</p>
     </div><figure class="window-frame">
       <svg viewBox="0 0 520 408" role="img" aria-label="傍晚咖啡店，两杯咖啡在窗边的桌上">
         <defs><linearGradient id="dusk" x2="0" y2="1"><stop stop-color="#816270"/><stop offset="1" stop-color="#dd9b82"/></linearGradient></defs>
@@ -79,6 +133,7 @@
     return `<section class="panel">
       ${heading("赴约前 / 01", "想遇见怎样的人？", "偏好只用来挑这一场。你可以细选，也可以直接去盲约。")}
       <div class="form-grid">
+        ${modelMode ? `<label class="field"><span>这一场的节奏（自主选择）</span><select name="mode">${Object.entries({mellow:"新手尝鲜",spark:"心动试探",tension:"暧昧过招",hard:"地狱修罗场"}).map(([id,label])=>option(id,label,config.mode)).join("")}</select><small>高档会出现含糊回应、期待落差和关系张力；边界与随时退出始终有效。</small></label>` : ""}
         <fieldset><legend>成年确认</legend>${check("adult", "我已年满 18 岁", config.adult)}</fieldset>
         <div class="field-row">
           <label class="field"><span>想见的对象</span><select name="presentation">
@@ -154,7 +209,7 @@
   function live() {
     const role = engine.roleById(run.role);
     const scene = engine.sceneById(run.scene);
-    const start = engine.opening(run);
+    const start = modelMode ? modelOpening : engine.opening(run);
     const last = run.events.at(-1);
     const paused = run.phase === "paused";
     const label = run.branchFrom === null ? "约会现场" : "重演 / 同一刻的另一种走法";
@@ -163,8 +218,8 @@
         <p class="kicker">${label} · ${timeLabel(scene, run.elapsed)}</p>
         <h1 tabindex="-1">${role.name} · ${run.location}</h1>
         ${paused ? "<p class=\"line\">已经暂停。回到现场时，时间会从这一刻接上。</p>" : `
-          ${last?.detail || !last ? `<p class="stage-detail">${esc(last?.detail || start.detail)}</p>` : ""}
-          <p class="line">「${esc(last?.reply || start.line)}」</p>`}
+          ${last?.detail || !last ? `<p class="stage-detail" id="model-detail">${modelMode ? "" : esc(last?.detail || start.detail)}</p>` : ""}
+          <p class="line" id="model-line">「${modelMode ? "" : esc(last?.reply || start.line)}」</p>`}
       </article>
       <div class="control">
         ${paused ? button("resume", "回到现场") : button("pause", "暂停", "quiet")}
@@ -173,8 +228,9 @@
       </div>
       ${hint && !paused ? `<p class="prompt">可以从眼前的选择出发。${run.events.length ?
         "照自己的节奏决定，也可以先保留意见或道别。" : scene.hint}</p>` : ""}
+      ${modelMode && !paused ? `<label class="field"><span>你想说什么？</span><textarea name="utterance" maxlength="1200" ${busy ? "disabled" : ""}></textarea></label><div class="buttons"><button type="button" data-go="send" ${busy ? "disabled" : ""}>${busy ? "正在回应…" : "发送"}</button>${busy ? button("cancel", "取消本次请求") : ""}</div>` : ""}
       ${paused ? "" : `<div class="steps" aria-label="你想怎么做">${engine.choices(run).map((choice, index) =>
-        `<button type="button" data-action="${choice.id}" data-turn="${run.events.length}"${index === 0 ? ' class="primary"' : ""}>${choice.label}</button>`).join("")}</div>`}
+        `<button type="button" data-action="${choice.id}" ${busy ? "disabled" : ""} data-turn="${run.events.length}"${index === 0 ? ' class="primary"' : ""}>${choice.label}</button>`).join("")}</div>`}
       ${run.events.length && !paused ? `<details><summary>看看已经发生的事</summary>${log(run.events)}</details>` : ""}
     </section>`;
   }
@@ -234,6 +290,15 @@
   function show(next, message = "", focus = true) {
     screen = next;
     app.innerHTML = views[next]();
+    if (modelMode && next === "live") {
+      const last = run.events.at(-1);
+      const line = app.querySelector("#model-line");
+      const detail = app.querySelector("#model-detail");
+      if (line) line.textContent = last?.reply || modelOpening?.line || "";
+      if (detail) detail.textContent = last?.detail || modelOpening?.detail || "";
+      const input = app.querySelector('[name="utterance"]');
+      if (input) input.value = utterance;
+    }
     status.textContent = message;
     refreshCardPreview();
     if (focus) app.querySelector("h1")?.focus();
@@ -257,6 +322,14 @@
   }
 
   function startDate(role) {
+    if (modelMode) return modelRequest("/api/session", {
+      config:Object.fromEntries(["adult","scene","player","presentation","avoid","seed","mode","traits","interest","surprise"].map(key=>[key,config[key]])),
+      roleId:role.id,
+    }, value => {
+      modelOpening = value.opening;
+      hint = config.guidance;
+      show("live");
+    });
     run = engine.createRun(config, role.id);
     hint = config.guidance;
     show("live");
@@ -281,6 +354,7 @@
 
   app.addEventListener("input", (event) => {
     const { name, value, checked, type } = event.target;
+    if (name === "utterance") { if (utterance !== value) retryTurn = null; utterance = value; return; }
     if (name === "traits" || name === "avoid") {
       const list = config[name];
       if (checked && name === "traits" && list.length >= 3) {
@@ -291,6 +365,10 @@
       config[name] = checked ? [...list, value] : list.filter((item) => item !== value);
     } else if (Object.hasOwn(config, name)) {
       config[name] = type === "checkbox" ? checked : value;
+      if (name === "player") {
+        config.presentation = value === "man" ? "woman" : value === "woman" ? "man" : "unspecified";
+        show("preferences", "已根据本场视角调整对象偏好。", false);
+      }
     } else if (Object.hasOwn(draft, name)) {
       draft[name] = type === "checkbox" ? checked : value;
       if (name === "accepted") {
@@ -301,11 +379,12 @@
     }
   });
 
-  app.addEventListener("click", (event) => {
+  app.addEventListener("click", async (event) => {
     const target = event.target.closest("button");
     if (!target) return;
     const { go, action, turn, select } = target.dataset;
     if (action) {
+      if (modelMode) return sendModel({actionId:action});
       const updated = engine.act(run, action, Number(turn));
       if (updated === run) return;
       run = updated;
@@ -322,7 +401,23 @@
       return;
     }
     switch (go) {
-      case "start":
+      case "start-model": {
+        if (!/^https?:$/.test(window.location?.protocol || "")) { status.textContent = "模型自由互动需要通过本地服务打开网页。"; break; }
+        if (busy) break;
+        busy = true;
+        const ticket = ++generation;
+        try {
+          const info = await api("/api/config");
+          if (ticket !== generation) break;
+          if (!info.available) throw new Error("本地服务尚未配置模型，请先在服务端配置。");
+          modelMode = true; show("preferences");
+        } catch (error) { if (ticket === generation) status.textContent = error.message; }
+        finally { if (ticket === generation) busy = false; }
+        break;
+      }
+      case "send": if (utterance.trim()) return sendModel({text:utterance}); break;
+      case "cancel": return control("cancel");
+      case "start": modelMode = false; show("preferences"); break;
       case "preferences": show("preferences"); break;
       case "settings": if (checkAdult()) show("settings"); break;
       case "blind": {
@@ -340,16 +435,17 @@
         break;
       case "swap": candidateIndex = (candidateIndex + 1) % candidates.length; show("invitation"); break;
       case "meet": startDate(candidates[candidateIndex]); break;
-      case "pause": run = engine.pause(run); show("live"); break;
-      case "resume": run = engine.resume(run); show("live"); break;
+      case "pause": if (modelMode) return control("pause"); run = engine.pause(run); show("live"); break;
+      case "resume": if (modelMode) return control("resume"); run = engine.resume(run); show("live"); break;
       case "hint":
         hint = !hint;
         show("live", "", false);
         app.querySelector('[data-go="hint"]').focus();
         break;
-      case "end": run = engine.end(run); finish(); break;
+      case "end": if (modelMode) return control("end"); run = engine.end(run); finish(); break;
       case "review": show("review"); break;
       case "replay": {
+        if (modelMode) { if (alternative || draft.selected === null) break; return control("replay", {index:draft.selected}); }
         const branch = engine.replay(original, draft.selected);
         if (!branch || alternative) break;
         run = branch;
@@ -378,7 +474,17 @@
         if (image) download(image, "个人 Dating 卡.svg", "image/svg+xml;charset=utf-8");
         break;
       }
-      case "reset": reset(); break;
+      case "reset": {
+        if (modelMode && session) {
+          ++generation;
+          busy = true;
+          retryTurn = null;
+          try { await api("/api/control", {sessionId:session.sessionId, command:"discard"}); }
+          catch (error) { busy = false; status.textContent = `清空失败：${error.message}`; break; }
+        }
+        reset();
+        break;
+      }
     }
   });
 
