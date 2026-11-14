@@ -144,7 +144,7 @@ https://github.com/Surge-Dan/dating-god
 node --test tests/dating-god.test.cjs tests/dating-page.test.cjs
 ```
 
-测试与审查范围见[对抗审查记录](dating-god-对抗审查.md)。
+自动测试覆盖角色匹配、回合状态、边界、重演及导出内容。页面事件测试在Node环境执行。
 
 ## 💌反馈与共建
 
