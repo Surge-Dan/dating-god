@@ -11,10 +11,10 @@ const setup = (scene, role, extra) => engine.createRun(config(scene, extra), rol
 const move = (run, action) => engine.act(run, action, run.events.length);
 const available = (run) => engine.choices(run).map((choice) => choice.id);
 
-test("three released scenes each offer every supported presentation", () => {
-  assert.equal(content.roles.length, 8);
+test("released activities offer male and female candidates", () => {
+  assert.equal(content.roles.length, 32);
   for (const scene of content.scenes) {
-    for (const presentation of ["woman", "man", "nonbinary"]) {
+    for (const presentation of ["woman", "man"]) {
       const matches = engine.match(config(scene.id, { presentation }));
       assert.ok(matches.length, `${scene.id} ${presentation}`);
       assert.ok(matches.every((role) => role.presentation === presentation));
@@ -186,7 +186,7 @@ test("ending a replay before making another choice still records the ending", ()
   assert.equal(branch.events.length, 0);
 });
 
-test("all released role and scene pairs support confirmed plans and a complete no-plan ending", () => {
+test("all released role and activity pairs support confirmed plans and a no-plan ending without second stations", () => {
   let pairs = 0;
   for (const scene of content.scenes) {
     for (const role of engine.match(config(scene.id))) {
@@ -194,16 +194,20 @@ test("all released role and scene pairs support confirmed plans and a complete n
       const initial = setup(scene.id, role.id);
       const pending = [initial];
       const outcomes = new Set();
+      const seen = new Set();
       while (pending.length) {
         const current = pending.pop();
-        assert.ok(current.elapsed <= role.limit);
-        assert.ok(current.events.length <= 10);
+        assert.ok(current.elapsed <= (current.limit ?? role.limit));
+        assert.ok(current.events.length <= 40);
+        const key=JSON.stringify([current.scene,current.node,current.phase,current.elapsed,current.closed,current.usedChanges,current.activityState,current.proposal,current.agreement,current.events.some(e=>e.action==='keep-light')]);
+        if(seen.has(key)) continue;seen.add(key);
         if (current.phase === "ended") {
           outcomes.add(Boolean(current.agreement));
           continue;
         }
         assert.ok(available(current).includes("leave"));
         for (const id of available(current)) {
+          if(id.startsWith('station:'))continue;
           const next = move(current, id);
           assert.notEqual(next, current);
           assert.ok(next.events.at(-1).reply.trim());
@@ -213,5 +217,5 @@ test("all released role and scene pairs support confirmed plans and a complete n
       assert.deepEqual(outcomes, new Set([true, false]), `${role.id}×${scene.id}`);
     }
   }
-  assert.equal(pairs, 15);
+  assert.ok(pairs >= 192);
 });

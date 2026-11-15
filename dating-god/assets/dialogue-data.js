@@ -29,6 +29,12 @@
     { scene: "S07", tag: "没接住", user: "你这么会，是批发的吗？", reply: "这句我有点没接住。你是在夸我吗？", requires: "角色确实不懂或不确定这句玩笑" },
     { scene: "S02", tag: "留白", user: "我先安静一会儿", reply: "好。我看看这排旧书。", requires: "仍在书店，不把例子地点带进其他场景" },
   ];
+  const expanded = typeof module !== "undefined" ? require("./expanded-content.js") : window.DatingExpanded;
+  if (expanded) {
+    Object.assign(profiles, expanded.profiles);
+    examples.forEach((example,index)=>{example.style=["直接自然","温和好奇","短句留白","轻松接梗"][index%4];example.source="原创虚构互动，仅学习表达，不是本场事实";});
+    examples.push(...expanded.examples);
+  }
   const data = { modes, profiles, examples };
   if (typeof module !== "undefined") module.exports = data;
   else window.DatingDialogue = data;

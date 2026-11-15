@@ -96,3 +96,24 @@ summary { cursor: pointer; color: var(--wine); }
   .cover, .theatre { animation: arrive .22s ease-out; }
   @keyframes arrive { from { opacity: .6; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 }
+.scene-groups { display: grid; gap: 1.4rem; }
+.scene-category > summary { display: flex; align-items: center; gap: .45rem; font-size: 1.15rem; margin: .4rem 0 .65rem; }
+.scene-category > summary svg { width: 1.4rem; height: 1.4rem; flex: none; }
+.scene-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .65rem; }
+.scene-card { display: grid; align-content: start; gap: .4rem; text-align: left; padding: 1rem; font-weight: 400; }
+.scene-card strong { font-family: var(--serif); font-size: 1.15rem; }
+.scene-card span { color: var(--ink); font-size: .9rem; }
+.scene-card small { color: var(--muted); line-height: 1.6; }
+.scene-card[aria-pressed="true"] { box-shadow: inset 3px 0 0 var(--wine); }
+.mode-note { color: #e9cdb9; font-size: .85rem; margin: -.3rem 0 1rem; }
+input[type="number"], input[name="diet"] { width: 100%; padding: .55rem .65rem; background: var(--paper-light); color: var(--ink); }
+.setup-details { margin: 0; border: 1px solid var(--line); padding: .65rem .8rem; }
+@media (max-width: 540px) { .scene-cards { grid-template-columns: 1fr; } }
+
+.scene-warning { color: var(--wine); font-size: .8rem; font-style: normal; font-weight: 700; }
+
+.scene-category { margin: 0; padding: .6rem 0; }
+.scene-category > summary small { color: var(--muted); font-weight: 400; }
+
+.scene-category > summary::after { content: "+"; margin-left: auto; }
+.scene-category[open] > summary::after { content: "−"; }

@@ -4,6 +4,18 @@
   const presentations = ["woman", "man", "nonbinary", "any", "unspecified"];
   const sceneById = (id) => scenes.find((scene) => scene.id === id);
   const roleById = (id) => roles.find((role) => role.id === id);
+  function canVisit(run, target) {
+    const role=roleById(run.role);
+    if(!target||target.secondStationAllowed===false||!role.scenes.includes(target.id))return false;
+    if(run.elapsed+5+(target.duration||15)>(run.limit??role.limit))return false;
+    if(run.budget!==null&&run.budget!==undefined&&(run.spent||0)+(target.cost||0)>run.budget)return false;
+    if(target.openingHours){
+      const [h,m]=sceneById(run.initialScene||run.scene).time.split(':').map(Number);
+      const arrival=h*60+m+run.elapsed+5;
+      if(arrival<target.openingHours[0]*60||arrival+(target.duration||15)>target.openingHours[1]*60)return false;
+    }
+    return true;
+  }
 
   function mix(seed, id) {
     return [...id].reduce((value, char) => Math.imul(value ^ char.charCodeAt(0), 16777619), seed) >>> 0;
@@ -13,6 +25,8 @@
     if (config.adult !== true || !presentations.includes(config.presentation)) return [];
     const scene = sceneById(config.scene);
     if (!scene) return [];
+    if (Number.isFinite(config.budget) && (scene.cost || 0) > config.budget) return [];
+    if (Number.isFinite(config.timeBudget) && (scene.duration || 0) > config.timeBudget) return [];
     const preferences = [...new Set(config.traits || [])].filter((key) => Object.hasOwn(traits, key)).slice(0, 3);
     const seed = config.seed >>> 0;
     const score = (role) =>
@@ -21,6 +35,7 @@
       (Object.hasOwn(interests, config.interest) && role.interests.includes(config.interest) ? 1 : 0);
     return roles.filter((role) =>
       role.age >= 18 && role.scenes.includes(scene.id) && role.players.includes(config.player) &&
+      (!config.mode || !role.modes || role.modes.includes(config.mode)) &&
       (config.player !== "man" || role.presentation === "woman") &&
       (config.player !== "woman" || role.presentation === "man") &&
       (["any", "unspecified"].includes(config.presentation) || role.presentation === config.presentation)
@@ -40,6 +55,7 @@
     } else if (scene.id === "S05" && role.id === "R03") {
       line = "原来两个人点菜不用开群投票。你想先吃什么？";
     }
+    if (scene.greeting || scene.opening) line = scene.greeting || scene.opening;
     return { detail: scene.intro, line };
   }
 
@@ -47,7 +63,17 @@
     const role = match(config).find((item) => item.id === roleId);
     if (!role) throw new Error("This match does not meet the current configuration.");
     const scene = sceneById(config.scene);
+    const pick = (key, allowed, fallback) => allowed.includes(config[key]) ? config[key] : fallback;
     return {
+      mode: pick('mode', ['mellow','spark','tension','hard'], 'mellow'),
+      stage: pick('stage', ['first','second','friends','flirting','steady'], 'first'),
+      intent: pick('intent', ['casual','serious','undecided'], 'undecided'),
+      exclusivity: pick('exclusivity', ['unspecified','exclusive','open'], 'unspecified'),
+      timeBudget: Number.isFinite(config.timeBudget) ? config.timeBudget : null,
+      limit: Math.min(Number.isFinite(config.timeBudget) ? config.timeBudget : Infinity, Math.max(role.limit, (scene.duration || 0) + 10)),
+      budget: Number.isFinite(config.budget) ? config.budget : null, spent: scene.cost || 0,
+      diet: String(config.diet || '').slice(0,160), experience: config.experience === 'familiar' ? 'familiar' : 'novice', alcohol: config.alcohol === true,
+      activityState: { ...(scene.initialState || {}) }, stations: [scene.id], initialScene: scene.id, pendingStation: null,
       role: role.id, scene: scene.id, phase: "live", node: "start", elapsed: 0, location: scene.place,
       avoid: [...new Set(config.avoid || [])].filter((key) => Object.hasOwn(topics, key)),
       surprise: config.surprise === true, usedChanges: [], closed: [], agreement: null,
@@ -59,18 +85,31 @@
     if (run.phase !== "live") return [];
     const scene = sceneById(run.scene);
     const role = roleById(run.role);
+    if (run.pendingStation) {
+      const target=sceneById(run.pendingStation);
+      const feasible=canVisit(run,target);
+      return [...(feasible?[{id:'station-confirm',label:'确认一起去第二站',type:'station-confirm'}]:[]),
+        {id:'station-cancel',label:feasible?'先不换地方':'剩余安排已不够，撤回第二站',type:'station-cancel'},leave];
+    }
     const options = scene.nodes[run.node] || shared[run.node] || [];
     const filtered = options.filter((item) =>
       (!item.scene || item.scene === scene.id) && !run.closed.includes(item.id) &&
       !(item.id === "linger" && run.closed.includes("stay")) &&
+      (!item.requires || Object.entries(item.requires).every(([key,value]) => run.activityState?.[key] === value)) &&
+      (run.budget === null || run.budget === undefined || (run.spent || 0) + (item.cost || 0) <= run.budget) &&
       !(item.tags || []).some((tag) => run.avoid.includes(tag))
     );
     if (run.node === "decision" && role.stayStyle === "offer-walk" &&
-        run.elapsed + 5 <= role.limit && run.closed.includes("stay")) {
+        run.elapsed + 5 <= (run.limit ?? role.limit) && run.closed.includes("stay")) {
       filtered.push({ id: "stroll", label: "接受五分钟的短走", type: "stroll" });
     }
     if (run.node === "timing") {
       filtered.push({ id: "weekend", label: "周末可以，听听对方的安排", type: "weekend" });
+    }
+    if (run.events.length >= 2 && (run.stations?.length || 1) < 2 && !run.proposal && !run.closed.includes('stay') && !run.closed.includes('station-offer')) {
+      for (const next of scenes) if (next.id !== run.scene && canVisit(run,next)) {
+        filtered.push({id:`station:${next.id}`,label:`提议去第二站：${next.name}`,type:'station',station:next.id});
+      }
     }
     return [...filtered, leave];
   }
@@ -103,6 +142,15 @@
     const privateSchedule = run.avoid.includes("work");
     const reason = privateSchedule ? "处理自己的安排" : role.obligation;
     const next = { ...run, node: action.to || run.node };
+    if (action.type === 'station' || action.type === 'station-confirm' || action.type === 'station-cancel') {
+      let reply,detail='';
+      if(action.type === 'station') { next.pendingStation=action.station;next.closed=[...run.closed,'station-offer'];reply=`可以，我还有时间。一起去${sceneById(action.station).name}？你确定的话我们再出发。`; }
+      else if(action.type === 'station-cancel') {next.pendingStation=null;reply='好，先在这儿待着。';}
+      else { const target=sceneById(run.pendingStation);if(!target)return run;next.scene=target.id;next.location=target.place;next.node='start';next.activityState={...(target.initialState||{})};next.stations=[...(run.stations||[run.scene]),target.id];next.elapsed=run.elapsed+5;next.spent=(run.spent||0)+(target.cost||0);next.pendingStation=null;reply='走吧，那我们一起过去。';detail=target.intro; }
+      next.events=[...run.events,{action:id,label:action.label,reply,detail,effect:action.type==='station-confirm'?'双方确认第二站并抵达':'第二站尚待双方确认',tags:[],before:snapshot(run)}];return next;
+    }
+    next.activityState={...(run.activityState||{}),...(action.patch||{})};
+    next.spent=(run.spent||0)+(action.cost||0);
     const change = changes[action.change];
     const showChange = change && !run.usedChanges.includes(action.change) && (!change.surprise || run.surprise);
     let reply = action.voice ? role[action.voice] : action.reply;
@@ -127,7 +175,7 @@
       effect = "本场散场";
       elapsed = 0;
     } else if (action.type === "stay") {
-      const canWalk = role.stayStyle === "offer-walk" && run.elapsed + 5 <= role.limit;
+      const canWalk = role.stayStyle === "offer-walk" && run.elapsed + 5 <= (run.limit ?? role.limit);
       const leavesNow = role.stayStyle === "leave";
       const discreetReply = leavesNow ? "今天就到这儿吧，我还有自己的安排。" : "今天不再延长了，我后面还有安排。";
       reply = canWalk
@@ -190,8 +238,8 @@
     if (action.tags?.includes("relationship") && action.id === "define") {
       effect = "角色表达了看法，后续关系仍待双方商量";
     }
-    next.elapsed = Math.min(run.elapsed + elapsed, role.limit);
-    if (next.phase === "live" && next.elapsed >= role.limit) {
+    next.elapsed = Math.min(run.elapsed + elapsed, run.limit ?? role.limit);
+    if (next.phase === "live" && next.elapsed >= (run.limit ?? role.limit)) {
       detail = [detail, `对方看了一眼时间，拿起随身的东西，准备${reason}。`].filter(Boolean).join(" ");
       next.phase = "ended";
       next.proposal = null;
@@ -208,10 +256,18 @@
   function replay(original, index) {
     if (original.phase !== "ended" || original.branchFrom !== null ||
         !Number.isInteger(index) || index < 0 || !original.events[index]) return null;
-    return { ...original.events[index].before, events: original.events.slice(0, index), branchFrom: index };
+    const before=original.events[index].before;
+    const order=['mellow','spark','tension','hard'];
+    const mode=order[Math.min(order.indexOf(before.mode||'mellow'),order.indexOf(original.mode||'mellow'))];
+    return { ...before, mode, events: original.events.slice(0, index), branchFrom: index };
   }
 
-  const engine = { match, createRun, opening, roleById, sceneById, choices, act, pause, resume, end, replay };
+  function setMode(run, mode) {
+    const order=['mellow','spark','tension','hard'];
+    if(!order.includes(mode)||order.indexOf(mode)>order.indexOf(run.mode||'mellow'))return run;
+    return {...run,mode};
+  }
+  const engine = { match, createRun, opening, roleById, sceneById, choices, act, pause, resume, end, replay, setMode };
   if (typeof module !== "undefined") module.exports = engine;
   else window.DatingEngine = engine;
 })();

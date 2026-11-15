@@ -15,10 +15,16 @@
   let utterance = "";
   let modelOpening;
   let retryTurn = null;
+  const modes = {mellow:"新手尝鲜",spark:"心动试探",tension:"暧昧过招",hard:"地狱修罗场"};
+  const modeHelp = {mellow:"先从具体小事开口，也可以直接表达需要。",spark:"留意对方有没有回问，给试探留一点余地。",tension:"可能出现含糊回应与期待落差，可以澄清，也可以收回提议。",hard:"关系张力更高。你可以放慢、拒绝或离开，不必证明自己。"};
   async function api(path, body) {
     const response = await fetch(path, body ? {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)} : {});
     const value = await response.json();
-    if (!response.ok) throw new Error(value.error?.message || "本地服务请求失败，请重试。");
+    if (!response.ok) {
+      const error = new Error(value.error?.message || "本地服务请求失败，请重试。");
+      error.code = value.error?.code;
+      throw error;
+    }
     return value;
   }
   async function modelRequest(path, body, done) {
@@ -75,6 +81,7 @@
   function reset(next = "cover") {
     ++generation; retryTurn = null; busy = false; session = null; modelMode = false; utterance = "";
     config = {
+      stage:"first", intent:"undecided", exclusivity:"unspecified", budget:300, timeBudget:180, alcohol:false, experience:"novice", diet:"",
       mode: "mellow", adult: false, presentation: "unspecified", player: "unspecified", traits: [],
       interest: "", scene: "S02", avoid: [], nickname: "", expectation: "",
       surprise: false, guidance: false, seed: crypto.getRandomValues(new Uint32Array(1))[0],
@@ -133,13 +140,25 @@
     return `<section class="panel">
       ${heading("赴约前 / 01", "想遇见怎样的人？", "偏好只用来挑这一场。你可以细选，也可以直接去盲约。")}
       <div class="form-grid">
-        ${modelMode ? `<label class="field"><span>这一场的节奏（自主选择）</span><select name="mode">${Object.entries({mellow:"新手尝鲜",spark:"心动试探",tension:"暧昧过招",hard:"地狱修罗场"}).map(([id,label])=>option(id,label,config.mode)).join("")}</select><small>高档会出现含糊回应、期待落差和关系张力；边界与随时退出始终有效。</small></label>` : ""}
+        <label class="field"><span>这一场的节奏（自主选择）</span><select name="mode">${Object.entries(modes).map(([id,label])=>option(id,label,config.mode)).join("")}</select><small>高档会出现含糊回应、期待落差和关系张力；边界与随时退出始终有效。</small></label>
+        <div class="field-row">
+          <label class="field"><span>你们的关系起点</span><select name="stage">${Object.entries({first:"初次见面",second:"第二次约会",friends:"朋友相约",flirting:"正在暧昧",steady:"稳定交往"}).map(([id,label])=>option(id,label,config.stage)).join("")}</select></label>
+          <label class="field"><span>这次的关系期待</span><select name="intent">${Object.entries({undecided:"还没想好",casual:"轻松相处",serious:"认真了解"}).map(([id,label])=>option(id,label,config.intent)).join("")}</select></label>
+        </div>
+        <details class="setup-details"><summary>预算、时间和相处约定</summary><div class="form-grid">
+          <p class="subline">这些条件会作为本场安排让角色知晓；私人期待便笺只留在本地。</p>
+          <div class="field-row"><label class="field"><span>本场预算（模拟人均，元）</span><input type="number" name="budget" min="0" max="100000" step="1" value="${config.budget}"></label><label class="field"><span>可用时间（分钟）</span><input type="number" name="timeBudget" min="5" max="1440" step="1" value="${config.timeBudget}"></label></div>
+          <label class="field"><span>希望的相处方式（需现场协商）</span><select name="exclusivity">${Object.entries({unspecified:"暂不确定",exclusive:"希望彼此排他",open:"可接受开放关系"}).map(([id,label])=>option(id,label,config.exclusivity)).join("")}</select></label>
+          <label class="field"><span>约会经验</span><select name="experience">${option("novice","刚开始尝试",config.experience)}${option("familiar","比较熟悉",config.experience)}</select></label>
+          ${check("alcohol","这场愿意饮酒（不选也可去酒吧，选择无酒精饮品）",config.alcohol)}
+          <label class="field"><span>饮食要求（可选，现场可知）</span><input name="diet" maxlength="160" value="${esc(config.diet)}" placeholder="例如，不吃花生；不需要填写病史"></label>
+        </div></details>
         <fieldset><legend>成年确认</legend>${check("adult", "我已年满 18 岁", config.adult)}</fieldset>
         <div class="field-row">
           <label class="field"><span>想见的对象</span><select name="presentation">
             ${option("unspecified", "暂不指定，便笺不先标性别", config.presentation)}
             ${option("any", "都可以，便笺可显示性别", config.presentation)}
-            ${Object.entries(display).map(([id, label]) => option(id, label, config.presentation)).join("")}
+            ${Object.entries(display).filter(([id])=>id!=="nonbinary").map(([id, label]) => option(id, label, config.presentation)).join("")}
           </select></label>
           <label class="field"><span>本场玩家视角（可选）</span><select name="player">
             ${option("unspecified", "暂不提供", config.player)}
@@ -160,14 +179,33 @@
     </section>`;
   }
 
+  function sceneIssue(scene) {
+    if ((scene.cost ?? 0) > config.budget) return "预算不足";
+    if ((scene.duration || 0) > config.timeBudget) return "时间不足";
+    return "";
+  }
+  function checkPlan() {
+    const issue = sceneIssue(engine.sceneById(config.scene));
+    if (!issue) return true;
+    status.textContent = `${issue}。请调整条件或换一个活动。`;
+    return false;
+  }
+  function scenePicker() {
+    const groups = new Map();
+    for (const scene of library.scenes) {
+      const category = scene.category || "见面活动";
+      if (!groups.has(category)) groups.set(category, []);
+      groups.get(category).push(scene);
+    }
+    return `<div class="scene-groups" aria-label="按活动选择场景">${[...groups].map(([category,scenes])=>`<details class="scene-category" ${scenes.some(scene=>scene.id===config.scene) ? "open" : ""}><summary><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h16v12H4zM8 4v8m8-8v8M4 13h16" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>${esc(category)}<small> ${scenes.length}项活动</small></summary><div class="scene-cards">${scenes.map(scene=>`<button type="button" data-scene="${esc(scene.id)}" aria-pressed="${config.scene===scene.id}" class="scene-card"><strong>${esc(scene.name)}</strong>${sceneIssue(scene) ? `<em class="scene-warning">${sceneIssue(scene)}</em>` : ""}<span>${esc(scene.description || scene.intro)}</span><small>${Number.isFinite(scene.duration) ? `${scene.duration}分钟` : "时长未提供"} · ${Number.isFinite(scene.cost) ? `模拟人均${scene.cost}元` : "预算未提供"}${scene.alcohol ? " · 可选酒精/无酒精饮品" : ""}</small><small>${esc(scene.time || "")} · ${esc(scene.pacing || "按自己的节奏")}${scene.requirements?.length ? ` · ${esc(scene.requirements.join("；"))}` : ""}</small></button>`).join("")}</div></details>`).join("")}</div>`;
+  }
+
   function settings() {
     return `<section class="panel">
-      ${heading("赴约前 / 02", "这次约在哪里？", "期待和想避开的话题只留在这场设置里。角色只知道你们实际说过的事。")}
+      ${heading("赴约前 / 02", "这次约在哪里？", "选一个起点。时间和预算用于判断后续安排，卡片金额是剧情估算，不是场馆报价。")}
       <div class="form-grid">
-        <label class="field"><span>地点与见面背景</span><select name="scene">
-          ${library.scenes.map((scene) => option(scene.id, scene.name, config.scene)).join("")}
-        </select></label>
-        <label class="field"><span>我希望这场约会……（可选）</span><textarea name="expectation" maxlength="320" placeholder="例如，我想试试说出自己真正喜欢的地点。">${esc(config.expectation)}</textarea></label>
+        ${scenePicker()}
+        <label class="field"><span>我希望这场约会……（私人便笺，不发送给角色）</span><textarea name="expectation" maxlength="320" placeholder="例如，我想试试说出自己真正喜欢的地点。">${esc(config.expectation)}</textarea></label>
         <fieldset><legend>避开的话题</legend><div class="checks">${Object.entries(library.topics).map(([id, label]) =>
           check("avoid", label, config.avoid.includes(id), id)).join("")}</div></fieldset>
         <fieldset><legend>节奏</legend><div class="checks">
@@ -203,7 +241,7 @@
 
   function log(events) {
     return `<ol class="log">${events.map((event) =>
-      `<li><strong>${esc(event.label)}</strong><br>${esc(event.reply)}${event.detail ? `<br>${esc(event.detail)}` : ""}<br><small>${esc(event.effect)}</small></li>`).join("")}</ol>`;
+      `<li>${event.before?.scene ? `<small>${esc(engine.sceneById(event.before.scene)?.name || event.before.scene)}</small><br>` : ""}<strong>${esc(event.label)}</strong><br>${esc(event.reply)}${event.detail ? `<br>${esc(event.detail)}` : ""}<br><small>${esc(event.effect)}</small></li>`).join("")}</ol>`;
   }
 
   function live() {
@@ -212,10 +250,14 @@
     const start = modelMode ? modelOpening : engine.opening(run);
     const last = run.events.at(-1);
     const paused = run.phase === "paused";
+    const choices = engine.choices(run);
+    const stations = choices.filter(choice=>choice.id.startsWith("station:"));
+    const regular = choices.filter(choice=>!choice.id.startsWith("station:"));
+    const actions = (items) => items.map((choice,index)=>`<button type="button" data-action="${esc(choice.id)}" ${busy ? "disabled" : ""} data-turn="${run.events.length}"${index===0 ? ' class="primary"' : ""}>${esc(choice.label)}</button>`).join("");
     const label = run.branchFrom === null ? "约会现场" : "重演 / 同一刻的另一种走法";
     return `<section class="panel">
       <article class="theatre">
-        <p class="kicker">${label} · ${timeLabel(scene, run.elapsed)}</p>
+        <p class="kicker">${label} · ${timeLabel(engine.sceneById(run.initialScene || run.scene), run.elapsed)}</p><p class="mode-note">${modes[run.mode || config.mode]} · ${modeHelp[run.mode || config.mode]}</p>
         <h1 tabindex="-1">${role.name} · ${run.location}</h1>
         ${paused ? "<p class=\"line\">已经暂停。回到现场时，时间会从这一刻接上。</p>" : `
           ${last?.detail || !last ? `<p class="stage-detail" id="model-detail">${modelMode ? "" : esc(last?.detail || start.detail)}</p>` : ""}
@@ -224,13 +266,14 @@
       <div class="control">
         ${paused ? button("resume", "回到现场") : button("pause", "暂停", "quiet")}
         ${!paused ? button("hint", hint ? "收起提示" : "我有点卡住", "quiet") : ""}
-        ${button("end", "提前散场", "quiet")}
+        ${button("end", "提前散场", "quiet")}${button("reset", "退出并清空本场", "quiet")}
+        ${Object.keys(modes).indexOf(run.mode || config.mode)>0 ? button("lower-mode", "降低这一场的强度", "quiet") : ""}
       </div>
       ${hint && !paused ? `<p class="prompt">可以从眼前的选择出发。${run.events.length ?
         "照自己的节奏决定，也可以先保留意见或道别。" : scene.hint}</p>` : ""}
       ${modelMode && !paused ? `<label class="field"><span>你想说什么？</span><textarea name="utterance" maxlength="1200" ${busy ? "disabled" : ""}></textarea></label><div class="buttons"><button type="button" data-go="send" ${busy ? "disabled" : ""}>${busy ? "正在回应…" : "发送"}</button>${busy ? button("cancel", "取消本次请求") : ""}</div>` : ""}
-      ${paused ? "" : `<div class="steps" aria-label="你想怎么做">${engine.choices(run).map((choice, index) =>
-        `<button type="button" data-action="${choice.id}" ${busy ? "disabled" : ""} data-turn="${run.events.length}"${index === 0 ? ' class="primary"' : ""}>${choice.label}</button>`).join("")}</div>`}
+      ${paused ? "" : `<div class="steps" aria-label="你想怎么做">${actions(regular)}</div>`}
+      ${!paused && stations.length ? `<details class="station-options"><summary>还有时间，提议一起去第二站</summary><p class="subline">只显示本场时间和预算允许的活动。先提出，双方再确认出发。</p><div class="steps">${actions(stations)}</div></details>` : ""}
       ${run.events.length && !paused ? `<details><summary>看看已经发生的事</summary>${log(run.events)}</details>` : ""}
     </section>`;
   }
@@ -268,7 +311,7 @@
     const experiment = report.experiment(original, exportDraft(), alternative);
     return `<section class="panel">
       ${heading("散场后 / 02", "散场之后", original.outcome)}
-      <article class="ticket"><p class="meta">这场 · ${engine.sceneById(original.scene).name}</p>
+      <article class="ticket"><p class="meta">这场 · ${[...new Set(original.stations || [original.scene])].map(id=>esc(engine.sceneById(id)?.name || id)).join(" → ")}</p>
       <h2>${approved ? "带走的一点发现" : "留给自己的一个问题"}</h2>
       <p>${esc(approved || "回到那一刻，我最想保留的是怎样的相处方式？")}</p>
       ${experiment ? `<p><strong>下次可试</strong>　${esc(experiment)}</p>` : ""}
@@ -323,7 +366,7 @@
 
   function startDate(role) {
     if (modelMode) return modelRequest("/api/session", {
-      config:Object.fromEntries(["adult","scene","player","presentation","avoid","seed","mode","traits","interest","surprise"].map(key=>[key,config[key]])),
+      config:Object.fromEntries(["adult","scene","player","presentation","avoid","seed","mode","traits","interest","surprise","stage","intent","exclusivity","budget","timeBudget","alcohol","experience","diet"].map(key=>[key,config[key]])),
       roleId:role.id,
     }, value => {
       modelOpening = value.opening;
@@ -364,6 +407,11 @@
       }
       config[name] = checked ? [...list, value] : list.filter((item) => item !== value);
     } else if (Object.hasOwn(config, name)) {
+      if (name === "budget" || name === "timeBudget") {
+        const number = Number(value);
+        config[name] = Number.isFinite(number) ? Math.max(name === "budget" ? 0 : 5, Math.min(name === "budget" ? 100000 : 1440, Math.round(number))) : (name === "budget" ? 300 : 180);
+        return;
+      }
       config[name] = type === "checkbox" ? checked : value;
       if (name === "player") {
         config.presentation = value === "man" ? "woman" : value === "woman" ? "man" : "unspecified";
@@ -382,7 +430,13 @@
   app.addEventListener("click", async (event) => {
     const target = event.target.closest("button");
     if (!target) return;
-    const { go, action, turn, select } = target.dataset;
+    const { go, action, turn, select, scene } = target.dataset;
+    if (scene) {
+      if (!library.scenes.some(item=>item.id===scene)) return;
+      config.scene = scene;
+      show("settings", "已选择活动，可以继续查看便笺。", false);
+      return;
+    }
     if (action) {
       if (modelMode) return sendModel({actionId:action});
       const updated = engine.act(run, action, Number(turn));
@@ -417,24 +471,34 @@
       }
       case "send": if (utterance.trim()) return sendModel({text:utterance}); break;
       case "cancel": return control("cancel");
+      case "lower-mode": {
+        const index = Object.keys(modes).indexOf(run.mode || config.mode);
+        if (index <= 0) break;
+        const mode = Object.keys(modes)[index-1];
+        if (modelMode) return control("set-mode", {mode});
+        config.mode = mode;
+        run = engine.setMode(run, mode);
+        show("live", "已降低强度，已发生的事会保留。");
+        break;
+      }
       case "start": modelMode = false; show("preferences"); break;
       case "preferences": show("preferences"); break;
       case "settings": if (checkAdult()) show("settings"); break;
       case "blind": {
-        if (!checkAdult()) break;
+        if (!checkAdult() || !checkPlan()) break;
         const eligible = engine.match(config);
         if (eligible.length) startDate(eligible[0]);
         else show("invitation");
         break;
       }
       case "match":
-        if (!checkAdult()) break;
+        if (!checkAdult() || !checkPlan()) break;
         candidates = engine.match(config);
         candidateIndex = 0;
         show("invitation");
         break;
       case "swap": candidateIndex = (candidateIndex + 1) % candidates.length; show("invitation"); break;
-      case "meet": startDate(candidates[candidateIndex]); break;
+      case "meet": if (checkPlan()) startDate(candidates[candidateIndex]); break;
       case "pause": if (modelMode) return control("pause"); run = engine.pause(run); show("live"); break;
       case "resume": if (modelMode) return control("resume"); run = engine.resume(run); show("live"); break;
       case "hint":
@@ -480,7 +544,7 @@
           busy = true;
           retryTurn = null;
           try { await api("/api/control", {sessionId:session.sessionId, command:"discard"}); }
-          catch (error) { busy = false; status.textContent = `清空失败：${error.message}`; break; }
+          catch (error) { if (error.code !== "SESSION_NOT_FOUND") { busy = false; status.textContent = `清空失败：${error.message}`; break; } }
         }
         reset();
         break;

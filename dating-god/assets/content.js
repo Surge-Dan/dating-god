@@ -56,8 +56,8 @@
       greeting: "等位大概要十分钟。你愿意等的话我去拿水，我也可以跟你出去转一圈。",
       story: "上回下雨，球场换到一个小学。打完我才发现篮筐比平时矮半截。",
       listen: "听懂了。换成我也会先试那一个，你当时是怎么定下来的？",
-      quiet: "可以歇会儿。我去给你倒杯水，你慢慢看。",
-      joke: "好消息是已经歪得很统一了。",
+      quiet: "那先歇会儿。想说再说，我不着急。",
+      joke: "这次我先记住教训，下次争取犯点新的。",
       turnDown: "今天再往后我就来不及集合了。我得按原来的时间走。",
       next: "周日上午十一点，书店咖啡门口",
       proposal: "周日十一点我有空。书店咖啡门口见，你看行吗？",
@@ -106,9 +106,9 @@
       stayStyle: "leave",
       greeting: "上次喝咖啡我光顾着捏杯套了。今天终于能正大光明地捏东西。",
       story: "我小时候做过一只泥巴兔子，回家跟我爸说那是一条狗。",
-      listen: "你等我把手擦一下，我想听后面。刚才这个边快掉下来了。",
-      quiet: "好，我先顾一下这个快塌的边。你不用管我。",
-      joke: "这只杯子不歪。它只是有一个独立的人生方向。",
+      listen: "然后呢？我还想听后面。你不用急着讲。",
+      quiet: "好，那先不聊。我也缓一会儿。",
+      joke: "我现在看起来很镇定吗？那是我装的。",
       turnDown: "我得先把工具还了。要不把杯子先托给店里？",
       next: "周六下午两点，陶艺店门口",
       proposal: "周六两点来给杯子上釉？我想看看它到底还能歪成什么样。",
@@ -124,7 +124,7 @@
       greeting: "我刚差点按平时的习惯把这事发群里。两个人见，原来还是会有点不一样。",
       story: "上回收摊搬了十二把椅子，朋友请我喝奶茶，给了十二分甜。",
       listen: "我本来想接个梗。算了，你这个故事还没讲完，我先听。",
-      quiet: "那先吃。我也想看看这小碟里到底是什么。",
+      quiet: "好，先不急着说。我也歇会儿。",
       joke: "可以，给这个突发事件发一张优秀参与奖。",
       turnDown: "我答应去搬椅子了。今天就先散吧。",
       next: "周日下午三点，市集入口",
@@ -140,7 +140,7 @@
       greeting: "今天就咱俩，我想先听你的意见。还是点上次没点到的那个？",
       story: "你知道吗，上次群里都说吃面，最后有四个人点了饭。",
       listen: "你是说你想试一次，还是以后都愿意这么安排？我怕我听岔了。",
-      quiet: "好，等你想说再说。我先去拿两双筷子。",
+      quiet: "好，我先看看这边。等你想说再说。",
       joke: "这个可以先记下来，下次群里他们又说随便时拿出来。",
       turnDown: "我等会儿得去接人。你说的再待一会儿，咱改天留长一点吧。",
       next: "周六下午五点，地铁口旁的小馆",
@@ -231,6 +231,8 @@
   };
 
   const content = { topics, traits, interests, roles, scenes, shared, leave, changes };
+  const expanded = typeof module !== "undefined" ? require("./expanded-content.js") : window.DatingExpanded;
+  if (expanded) expanded.extend(content);
   if (typeof module !== "undefined") module.exports = content;
   else window.DatingContent = content;
 })();

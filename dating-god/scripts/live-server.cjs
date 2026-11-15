@@ -12,6 +12,7 @@ const STATIC = new Map([
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/engine.js', ['engine.js', 'text/javascript; charset=utf-8']],
   ['/content.js', ['content.js', 'text/javascript; charset=utf-8']],
+  ['/expanded-content.js', ['expanded-content.js', 'text/javascript; charset=utf-8']],
   ['/dialogue-data.js', ['dialogue-data.js', 'text/javascript; charset=utf-8']],
   ['/report.js', ['report.js', 'text/javascript; charset=utf-8']],
   ['/style.css', ['style.css', 'text/css; charset=utf-8']],

@@ -115,6 +115,8 @@ test("model page sends free text, blocks duplicates, preserves failed input, and
   await new Promise(resolve => setImmediate(resolve));
   const sentConfig = calls.find(c=>c.path==="/api/session").body.config;
   for (const privateKey of ["nickname","expectation","guidance"]) assert.equal(Object.hasOwn(sentConfig,privateKey),false);
+  for (const field of ["stage","intent","exclusivity","budget","timeBudget","alcohol","experience","diet"]) assert.ok(Object.hasOwn(sentConfig,field),field);
+  assert.equal(sentConfig.experience,"novice");
   assert.match(page.view.innerHTML, /name="utterance"/);
   page.input("utterance", "想聊聊你的周末");
   const first = page.click({go:"send"});
@@ -161,4 +163,52 @@ test("retry after response loss reuses the same request identity", async () => {
   await page.click({go:"send"});await page.click({go:"send"});
   assert.equal(bodies.length,2);
   assert.equal(bodies[0].requestId,bodies[1].requestId);
+});
+
+test("offline setup exposes relationship and practical constraints without a separate questionnaire", async () => {
+  const page=openPage();await page.click({go:"start"});
+  assert.match(page.view.innerHTML,/name="mode"/);
+  for(const name of ["stage","intent","exclusivity","budget","timeBudget","alcohol","experience","diet"]) assert.match(page.view.innerHTML,new RegExp('name="'+name+'"'));
+  page.input("adult",true);await page.click({go:"settings"});
+  assert.match(page.view.innerHTML,/class="scene-groups"/);
+  assert.match(page.view.innerHTML,/data-scene="S02"/);
+  assert.match(page.view.innerHTML,/data-scene="S05"/);
+  await page.click({scene:"S05"});
+  assert.match(page.view.innerHTML,/data-scene="S05"[^>]*aria-pressed="true"/);
+});
+
+
+test("offline scene keeps mode guidance and can lower the current intensity", async () => {
+  const page=openPage();await page.click({go:"start"});page.input("adult",true);page.input("mode","hard");
+  await page.click({go:"blind"});assert.match(page.view.innerHTML,/地狱修罗场/);
+  await page.click({go:"lower-mode"});assert.match(page.view.innerHTML,/暧昧过招/);
+  await page.click({go:"pause"});assert.match(page.view.innerHTML,/已经暂停/);
+});
+
+test("scene cards explain infeasible activities and block an over-budget start", async()=>{
+ const page=openPage();await page.click({go:"start"});page.input("adult",true);page.input("budget","0");
+ await page.click({go:"settings"});assert.match(page.view.innerHTML,/预算不足/);
+ await page.click({go:"match"});assert.match(page.status.textContent,/预算|时间/);
+ assert.doesNotMatch(page.view.innerHTML,/一张见面便笺/);
+});
+
+test("browser script bundle renders every released activity grouped by category",async()=>{
+ const page=openPage();await page.click({go:"start"});page.input("adult",true);await page.click({go:"settings"});
+ assert.equal([...page.view.innerHTML.matchAll(/data-scene="/g)].length,24);
+ for(const group of ["吃喝","文娱","户外","逛街","手作","游戏","运动","夜间"]) assert.match(page.view.innerHTML,new RegExp(group));
+ assert.doesNotMatch(page.view.innerHTML,/时长未提供|预算未提供/);
+});
+
+test("second station clock stays anchored to the start of the full date",async()=>{
+ const engine=require("../dating-god/assets/engine.js");let state;
+ const page=openPage({window:{location:{protocol:"http:"}},fetch:async(path,options)=>{
+  const body=options.body?JSON.parse(options.body):null;
+  if(path==="/api/config")return {ok:true,json:async()=>({available:true})};
+  if(path==="/api/session")state=engine.createRun(body.config,body.roleId);
+  else state={...state,scene:"S05",initialScene:"S02",elapsed:10};
+  return {ok:true,json:async()=>({sessionId:"clock",version:0,run:state,opening:{line:"你好",detail:"门口"}})};
+ }});
+ await page.click({go:"start-model"});page.input("adult",true);await page.click({go:"blind"});await new Promise(resolve=>setImmediate(resolve));
+ page.input("utterance","一起去下一站吧");await page.click({go:"send"});
+ assert.match(page.view.innerHTML,/16:10/);
 });
