@@ -7,6 +7,7 @@ const { createDialogueCore, LiveError } = require('./dialogue-core.cjs');
 
 const ASSETS = path.resolve(__dirname, '../assets');
 const STATIC = new Map([
+  ...['radar-rules.js','radar-core.js','radar-store.js','radar-ui.js'].map(file=>['/'+file,[file,'text/javascript; charset=utf-8']]),
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/index.html', ['index.html', 'text/html; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
@@ -57,6 +58,11 @@ async function startServer(options = {}) {
         if (req.headers.origin !== origin) throw new LiveError(403, 'ORIGIN', '会话请求必须来自本地服务页面。');
         const input = await readJSON(req);
         if (url.pathname === '/api/session') return json(res, 201, core.open(input));
+        if(url.pathname==='/api/radar')return json(res,200,core.radar(input));
+        if(url.pathname==='/api/radar/retry')return json(res,200,core.radarRetry(input));
+        if(url.pathname==='/api/radar/delete')return json(res,200,core.radarDelete(input));
+        if(url.pathname==='/api/radar/preflight')return json(res,200,core.radarPreflight(input));
+        if(url.pathname==='/api/radar/coach')return json(res,200,core.radarCoach(input));
         if (url.pathname === '/api/turn') return json(res, 200, await core.turn(input, disconnected.signal));
         if (url.pathname === '/api/control') {
           const result = core.control(input);

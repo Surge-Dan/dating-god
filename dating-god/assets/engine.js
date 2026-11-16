@@ -65,6 +65,7 @@
     const scene = sceneById(config.scene);
     const pick = (key, allowed, fallback) => allowed.includes(config[key]) ? config[key] : fallback;
     return {
+      runId: globalThis.crypto?.randomUUID?.() || `run-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       mode: pick('mode', ['mellow','spark','tension','hard'], 'mellow'),
       stage: pick('stage', ['first','second','friends','flirting','steady'], 'first'),
       intent: pick('intent', ['casual','serious','undecided'], 'undecided'),
@@ -111,6 +112,9 @@
         filtered.push({id:`station:${next.id}`,label:`提议去第二站：${next.name}`,type:'station',station:next.id});
       }
     }
+    if (!run.closed.includes('snap-photo') && !run.avoid.includes('photos')) {
+      filtered.push({ id: 'snap-photo', label: '想抓拍TA此刻的样子', type: 'photo-attempt', requiresConsent: true, tags: ['photos'] });
+    }
     return [...filtered, leave];
   }
 
@@ -142,12 +146,24 @@
     const privateSchedule = run.avoid.includes("work");
     const reason = privateSchedule ? "处理自己的安排" : role.obligation;
     const next = { ...run, node: action.to || run.node };
+    const eventId = `${run.runId}:branch-${run.branchFrom ?? 'original'}:event-${run.events.length}`;
+    if (action.type === 'photo-attempt') {
+      next.closed = [...run.closed, action.id];
+      next.events = [...run.events, {
+        eventId, canonicalEventId: eventId, action: id, actionType: 'photo',
+        label: action.label, reply: '先别拍，我今天不想被拍。我们继续聊吧。',
+        detail: '拍摄请求被阻止，没有拍到照片。', effect: '尝试被阻止，拍摄未执行',
+        executionStatus: 'blocked', radarFacts: { consent: false },
+        tags: ['photos'], before: snapshot(run),
+      }];
+      return next;
+    }
     if (action.type === 'station' || action.type === 'station-confirm' || action.type === 'station-cancel') {
       let reply,detail='';
       if(action.type === 'station') { next.pendingStation=action.station;next.closed=[...run.closed,'station-offer'];reply=`可以，我还有时间。一起去${sceneById(action.station).name}？你确定的话我们再出发。`; }
       else if(action.type === 'station-cancel') {next.pendingStation=null;reply='好，先在这儿待着。';}
       else { const target=sceneById(run.pendingStation);if(!target)return run;next.scene=target.id;next.location=target.place;next.node='start';next.activityState={...(target.initialState||{})};next.stations=[...(run.stations||[run.scene]),target.id];next.elapsed=run.elapsed+5;next.spent=(run.spent||0)+(target.cost||0);next.pendingStation=null;reply='走吧，那我们一起过去。';detail=target.intro; }
-      next.events=[...run.events,{action:id,label:action.label,reply,detail,effect:action.type==='station-confirm'?'双方确认第二站并抵达':'第二站尚待双方确认',tags:[],before:snapshot(run)}];return next;
+      next.events=[...run.events,{eventId,canonicalEventId:eventId,action:id,label:action.label,reply,detail,effect:action.type==='station-confirm'?'双方确认第二站并抵达':'第二站尚待双方确认',tags:[],before:snapshot(run)}];return next;
     }
     next.activityState={...(run.activityState||{}),...(action.patch||{})};
     next.spent=(run.spent||0)+(action.cost||0);
@@ -246,6 +262,8 @@
       next.outcome = "见面时间到了，双方各自离开。";
     }
     const event = {
+      eventId, canonicalEventId: eventId,
+      ...(action.requiresConsent ? { executionStatus: 'requested', radarFacts: { requiresConsent: true } } : {}),
       action: id, label: action.label, reply, detail, effect, tags: action.tags || [],
       before: snapshot(run),
     };

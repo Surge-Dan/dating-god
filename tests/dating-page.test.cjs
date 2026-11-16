@@ -10,7 +10,10 @@ function openPage(overrides = {}) {
   const events = {};
   const files = new Map();
   const downloads = [];
-  const focusable = { focus() {} };
+  let focusCount=0;
+  const focusable = { focus() {focusCount++;} };
+  const radarHost={innerHTML:""};
+  const extraElements=new Map();
   const art = {};
   const view = {
     innerHTML: "",
@@ -19,7 +22,7 @@ function openPage(overrides = {}) {
   };
   const status = { textContent: "" };
   const document = {
-    getElementById: (id) => ({ app: view, status, "card-art": view.innerHTML.includes('id="card-art"') ? art : null })[id],
+    getElementById: (id) => extraElements.get(id) || ({ "radar-host":view.innerHTML.includes('id="radar-host"')?radarHost:null, app: view, status, "card-art": view.innerHTML.includes('id="card-art"') ? art : null })[id],
     createElement: () => ({
       click() { downloads.push({ name: this.download, data: files.get(this.href) }); },
     }),
@@ -36,7 +39,7 @@ function openPage(overrides = {}) {
     runInNewContext(readFileSync(resolve(dir, script), "utf8"), context, { filename: script });
   }
   return {
-    view, status, downloads,
+    view, status, downloads, radarHost, focusCount:()=>focusCount, element:(id,value)=>extraElements.set(id,{value}),
     preview: () => files.get(art.src),
     click: (dataset) => events.click({ target: { closest: () => ({ dataset }) } }),
     input: (name, value) => events.input({ target: {
@@ -211,4 +214,24 @@ test("second station clock stays anchored to the start of the full date",async()
  await page.click({go:"start-model"});page.input("adult",true);await page.click({go:"blind"});await new Promise(resolve=>setImmediate(resolve));
  page.input("utterance","一起去下一站吧");await page.click({go:"send"});
  assert.match(page.view.innerHTML,/16:10/);
+});
+
+
+test("offline blocked photo produces a private short card and honors immersion toggle", async()=>{
+ const page=openPage(); await page.click({go:"start"});page.input("adult",true);await page.click({go:"blind"});
+ await page.click({action:"snap-photo",turn:"0"});await new Promise(resolve=>setImmediate(resolve));
+ assert.match(page.radarHost.innerHTML,/未获同意|拍摄|拍照/);assert.match(page.radarHost.innerHTML,/动作未执行/);
+ assert.match(page.radarHost.innerHTML,/离线仅检查结构化动作事实/);
+ const before=page.focusCount();await page.click({radar:"toggle",id:""});assert.equal(page.focusCount(),before);
+ assert.doesNotMatch(page.radarHost.innerHTML,/class="radar-card"/);
+ await page.click({radar:"toggle",id:""});assert.match(page.radarHost.innerHTML,/class="radar-card"/);
+});
+test("home groups practice rules and completes exactly three independent rounds",async()=>{
+ const page=openPage();await new Promise(resolve=>setImmediate(resolve));
+ assert.match(page.radarHost.innerHTML,/还没有保存的记录/);assert.match(page.radarHost.innerHTML,/radar-practice-group/);
+ page.element("radar-practice-rule","D04-01");await page.click({radar:"practice-chosen",id:""});
+ assert.match(page.radarHost.innerHTML,/独立微练习/);
+ for(let i=0;i<3;i++){await page.click({radar:"practice-action",id:String(i)});assert.match(page.radarHost.innerHTML,/TA：/);}
+ assert.match(page.radarHost.innerHTML,/3\/3/);assert.match(page.radarHost.innerHTML,/不推断现实中已经改善/);
+ await page.click({radar:"practice-close",id:""});assert.doesNotMatch(page.radarHost.innerHTML,/radar-practice-text/);
 });

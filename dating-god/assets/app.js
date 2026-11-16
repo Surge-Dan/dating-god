@@ -8,6 +8,7 @@
   const esc = (value = "") => String(value).replace(/[&<>"']/g, (char) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 
+  const radar = window.RadarUI.create({api,status,onPractice:startPractice,getDraft:()=>utterance,setDraft:text=>{utterance=String(text);const input=app.querySelector('[name="utterance"]');if(input)input.value=utterance;}});
   let modelMode = false;
   let session = null;
   let busy = false;
@@ -37,6 +38,8 @@
       if (ticket !== generation) return;
       session = {sessionId:value.sessionId, version:value.version};
       run = value.run;
+      radar.attach(value.sessionId,run?.branchFrom !== null,!!run?.practiceRuleId);
+      if (value.radar) radar.update(value.radar);
       busy = false;
       done(value);
     } catch (error) {
@@ -56,8 +59,9 @@
       else show("live");
     });
   }
-  function sendModel(payload) {
+  async function sendModel(payload) {
     if (!session || busy || run.phase !== "live") return;
+    radar.before();
     const identity = JSON.stringify({...session, ...payload});
     if (!retryTurn || retryTurn.identity !== identity) retryTurn = {identity, requestId:crypto.randomUUID()};
     return modelRequest("/api/turn", {...session, requestId:retryTurn.requestId, ...payload}, () => {
@@ -110,7 +114,7 @@
     return `<section class="cover"><div>
       <p class="kicker">约会短篇 / 第一辑</p>
       <h1 tabindex="-1">见面之后</h1>
-      <p class="deck">今晚的事，留在这一场。</p>
+      <p class="deck">今晚的事，默认留在这一场。</p>
       <p class="cover-note">赴一场虚构的成年约会。你决定往哪走、聊到哪里，也可以随时离开。散场后，想回看再把那一刻带走。</p>
       ${button("start-model", "模型自由互动", "primary")}${button("start", "离线体验")}<p class="cover-note">模型模式通过本地服务连接模型；离线体验使用预写剧情。模型模式会将本场设置和对话发送至你配置的模型服务。</p>
     </div><figure class="window-frame">
@@ -133,7 +137,7 @@
         <path d="M188 291q-14-15 1-28m10 28q-7-10 2-20m122 22q-11-14 3-29" fill="none" stroke="#f0cbb3" opacity=".65" stroke-width="2.5"/>
       </svg>
       <figcaption>窗边没有空位。门还开着。</figcaption>
-    </figure></section>`;
+    </figure></section><div id="radar-host"></div>`;
   }
 
   function preferences() {
@@ -263,10 +267,11 @@
           ${last?.detail || !last ? `<p class="stage-detail" id="model-detail">${modelMode ? "" : esc(last?.detail || start.detail)}</p>` : ""}
           <p class="line" id="model-line">「${modelMode ? "" : esc(last?.reply || start.line)}」</p>`}
       </article>
+      <div id="radar-host"></div>
       <div class="control">
         ${paused ? button("resume", "回到现场") : button("pause", "暂停", "quiet")}
         ${!paused ? button("hint", hint ? "收起提示" : "我有点卡住", "quiet") : ""}
-        ${button("end", "提前散场", "quiet")}${button("reset", "退出并清空本场", "quiet")}
+        ${button("radar-coach", "场外教练", "quiet")}${modelMode ? button("radar-preflight", "草稿预检", "quiet") : ""}${button("end", "提前散场", "quiet")}${button("reset", "退出并清空本场", "quiet")}
         ${Object.keys(modes).indexOf(run.mode || config.mode)>0 ? button("lower-mode", "降低这一场的强度", "quiet") : ""}
       </div>
       ${hint && !paused ? `<p class="prompt">可以从眼前的选择出发。${run.events.length ?
@@ -282,7 +287,7 @@
     const event = original.events[draft.selected];
     const suggestion = report.choices(original, draft.selected);
     return `<section class="panel">
-      ${heading("散场后 / 01", "想回看哪一刻？", original.outcome)}
+      ${heading("散场后 / 01", "想回看哪一刻？", original.outcome)}<div id="radar-host"></div>
       ${config.expectation.trim() ? `<article class="ticket"><p class="meta">赴约前写给自己的期待</p><p>${esc(config.expectation)}</p>
         ${check("includeExpectation", "把这条期待也写入 HTML 报告", draft.includeExpectation)}</article>` : ""}
       ${original.events.length ? `<div class="steps" aria-label="选一个回合">${original.events.map((item, index) =>
@@ -298,7 +303,7 @@
         <label class="field"><span>我想带走的一句话（可选）</span><input type="text" name="accepted" value="${esc(draft.accepted)}" maxlength="96" placeholder="按自己的话写，可以留空"></label>
         ${check("confirmed", "这句话是我认领的发现，可用于报告和 Dating 卡", draft.confirmed)}
       </div>
-      <div class="buttons">${button("final", "查看这场回看", "primary")}${button("reset", "不回看，结束这场", "quiet")}</div>
+      <div class="buttons">${button("final", "查看这场回看", "primary")}${button("save-home", "结束并保存已完成摘要")}${button("reset", "不回看，结束这场", "quiet")}</div>
     </section>`;
   }
 
@@ -310,7 +315,7 @@
     const approved = report.claim(original, exportDraft(), alternative);
     const experiment = report.experiment(original, exportDraft(), alternative);
     return `<section class="panel">
-      ${heading("散场后 / 02", "散场之后", original.outcome)}
+      ${heading("散场后 / 02", "散场之后", original.outcome)}<div id="radar-host"></div>
       <article class="ticket"><p class="meta">这场 · ${[...new Set(original.stations || [original.scene])].map(id=>esc(engine.sceneById(id)?.name || id)).join(" → ")}</p>
       <h2>${approved ? "带走的一点发现" : "留给自己的一个问题"}</h2>
       <p>${esc(approved || "回到那一刻，我最想保留的是怎样的相处方式？")}</p>
@@ -325,11 +330,11 @@
         : "<p class=\"subline\">确认一条自己的发现后，才会有可下载的 Dating 卡。</p>"}
       <div class="buttons">${button("download-report", "下载 HTML 回看", "primary")}
         ${approved ? button("download-card", "下载 Dating 卡（SVG）") : ""}
-        ${button("review", "返回调整", "quiet")}${button("reset", "结束并清空这场", "quiet")}</div>
+        ${button("review", "返回调整", "quiet")}${button("save-home", "结束并保存已完成摘要", "quiet")}${button("reset", "结束并清空这场", "quiet")}</div>
     </section>`;
   }
 
-  const views = { cover, preferences, settings, invitation, live, review, final };
+  const views = { cover, preferences, settings, invitation, live, review, final, practiceReview };
   function show(next, message = "", focus = true) {
     screen = next;
     app.innerHTML = views[next]();
@@ -342,6 +347,7 @@
       const input = app.querySelector('[name="utterance"]');
       if (input) input.value = utterance;
     }
+    radar.mount(next === "cover");
     status.textContent = message;
     refreshCardPreview();
     if (focus) app.querySelector("h1")?.focus();
@@ -358,17 +364,31 @@
     preview.src = cardPreviewUrl;
   }
 
+  async function startPractice(ruleId) {
+    config.practiceRuleId=ruleId;modelMode=true;
+    const template=window.RadarCore.selectPractice(ruleId);
+    const scene=library.scenes.find(s=>s.activityId===template.activityId);
+    if(scene)config.scene=scene.id;
+    if(!config.adult){show("preferences","先确认已年满18岁，再进入独立模型练习。");return;}
+    const role=engine.match(config)[0];if(role)startDate(role);else show("preferences","请调整活动与对象偏好。");
+  }
+  function practiceReview(){return `<section><h1>这一小段，先练到这里</h1><p>独立练习只记录本次言行，不据此认定已经改好。</p>${run.events.map(e=>`<p>你：${esc(e.label)}</p><p>TA：${esc(e.reply)}</p>`).join("")}<div id="radar-host"></div>${button("save-home","结束并保存已完成摘要")}${button("reset","结束并清空这场")}</section>`;}
   function finish() {
+    if(run.practiceRuleId){show("practiceReview");return;}
     if (run.branchFrom === null) original = run;
     else alternative = run;
     show("review");
   }
 
   function startDate(role) {
+    radar.begin(null);
     if (modelMode) return modelRequest("/api/session", {
-      config:Object.fromEntries(["adult","scene","player","presentation","avoid","seed","mode","traits","interest","surprise","stage","intent","exclusivity","budget","timeBudget","alcohol","experience","diet"].map(key=>[key,config[key]])),
+      config:{radarEnabled:true,...(config.practiceRuleId?{practiceRuleId:config.practiceRuleId}:{}),...Object.fromEntries(["adult","scene","player","presentation","avoid","seed","mode","traits","interest","surprise","stage","intent","exclusivity","budget","timeBudget","alcohol","experience","diet"].map(key=>[key,config[key]]))},
       roleId:role.id,
     }, value => {
+      radar.begin(value.sessionId);
+      radar.attach(value.sessionId,false,!!run?.practiceRuleId);
+      if(value.radar) radar.update(value.radar);
       modelOpening = value.opening;
       hint = config.guidance;
       show("live");
@@ -428,6 +448,7 @@
   });
 
   app.addEventListener("click", async (event) => {
+    if (event.target.closest("button")?.dataset.radar) return radar.handle(event);
     const target = event.target.closest("button");
     if (!target) return;
     const { go, action, turn, select, scene } = target.dataset;
@@ -439,9 +460,11 @@
     }
     if (action) {
       if (modelMode) return sendModel({actionId:action});
+      radar.before();
       const updated = engine.act(run, action, Number(turn));
       if (updated === run) return;
       run = updated;
+      radar.offline(run);
       hint = false;
       if (run.phase === "ended") finish();
       else show("live");
@@ -469,6 +492,9 @@
         finally { if (ticket === generation) busy = false; }
         break;
       }
+      case "radar-coach": return radar.coach(false);
+      case "radar-preflight": return radar.coach(true);
+      case "save-home": if(await radar.save()){reset();} break;
       case "send": if (utterance.trim()) return sendModel({text:utterance}); break;
       case "cancel": return control("cancel");
       case "lower-mode": {
@@ -509,6 +535,7 @@
       case "end": if (modelMode) return control("end"); run = engine.end(run); finish(); break;
       case "review": show("review"); break;
       case "replay": {
+        radar.begin(session?.sessionId,true);
         if (modelMode) { if (alternative || draft.selected === null) break; return control("replay", {index:draft.selected}); }
         const branch = engine.replay(original, draft.selected);
         if (!branch || alternative) break;
@@ -539,6 +566,7 @@
         break;
       }
       case "reset": {
+        radar.discard();
         if (modelMode && session) {
           ++generation;
           busy = true;

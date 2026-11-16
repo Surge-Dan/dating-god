@@ -1,4 +1,4 @@
 interface:
-  display_name: "Dating 之神 · 见面之后"
-  short_description: "赴一场独立的虚构成年约会，体验不同选择，并按需带走回看与个人卡片"
+  display_name: "Dating之神 · Dating God"
+  short_description: "赴一场虚构成年约会，在现场提醒和自查练习中调整表达，散场带走回看与卡片"
   default_prompt: "使用 $dating-god 开始一场约会。"

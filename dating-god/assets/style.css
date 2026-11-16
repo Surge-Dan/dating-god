@@ -117,3 +117,6 @@ input[type="number"], input[name="diet"] { width: 100%; padding: .55rem .65rem; 
 
 .scene-category > summary::after { content: "+"; margin-left: auto; }
 .scene-category[open] > summary::after { content: "−"; }
+
+/* Private coach records remain separate from scene dialogue and export fields. */
+.radar-panel{margin:28px 0;padding:22px;border:1px solid #c9b5a4;border-radius:8px;background:#f7f0e5;color:#3e2d35}.radar-toolbar,.radar-panel .buttons{display:flex;gap:8px;flex-wrap:wrap}.radar-toolbar button,.radar-panel .buttons button{font-size:.82rem;padding:8px 12px;min-height:44px}.radar-privacy,.radar-coverage{font-size:.82rem;line-height:1.6;color:#65545b}.radar-card,.radar-history,.radar-practice{margin:14px 0;padding:18px;border-left:3px solid #a76d59;background:#fffaf2}.radar-card h3{font-size:1rem;margin:5px 0;line-height:1.5}.radar-card p,.radar-history p{line-height:1.7;overflow-wrap:anywhere}.radar-card details{margin:12px 0}.radar-turn>.meta{font-size:.75rem}.radar-panel textarea{width:100%;min-height:80px}.radar-panel summary{cursor:pointer;min-height:36px}.radar-panel h2{font-size:1.4rem}.radar-panel button:focus-visible,.radar-panel summary:focus-visible{outline:3px solid #8f5b4c;outline-offset:3px}@media(max-width:600px){.radar-panel{padding:14px}.radar-card{padding:13px}.radar-toolbar button{flex:1 1 42%}}
