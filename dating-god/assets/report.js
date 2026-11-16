@@ -23,7 +23,7 @@
     const value = String(draft.accepted || "").trim();
     if (draft.confirmed !== true || !value || value.length > 96) return "";
     if (!choices(run, draft.selected) && !draft.note?.trim()) return "";
-    if (privateText.test(value) || value.includes(engine.roleById(run.role).name)) return "";
+    if (privateText.test(value) || value.includes(engine.resolveRole(run).name)) return "";
     if (draft.nickname?.trim() && value.includes(draft.nickname.trim())) return "";
     const unquote = (text) => text.replace(/[「」“”"'。！!？?]+/g, "");
     const spoken = [...run.events, ...(branch?.events || [])].map((event) => unquote(event.reply || ""));
@@ -44,7 +44,7 @@
   }
 
   function html(run, branch, draft = {}) {
-    const scene = engine.sceneById(run.scene);
+    const scene = engine.resolveScene(run);
     const selected = run.events[draft.selected];
     const reflection = claim(run, draft, branch);
     const nextExperiment = experiment(run, draft, branch);
@@ -62,6 +62,7 @@ blockquote{margin:.5em 0;padding-left:.8em;border-left:2px solid #a05764}p{white
 @media print{body{padding:0}li,blockquote{break-inside:avoid}}
 </style></head><body><header><small>见面之后 / 一次虚构成年约会的回看</small><h1>散场之后</h1>
 <p>${escape(scene.name)} · ${escape(run.outcome || "本场片段")}</p></header>
+${run.preparation ? `<section><h2>赴约准备</h2><p>对象和地点为本次模拟假设，不预测真人；地点营业、价格与预约未核实。</p><p>准备重点：${escape(run.preparation.focus || run.preparation.brief || '观察具体互动，确认彼此条件')}</p><p>关键未知：${escape(run.preparation.unknowns || '对象当次意愿仍需向真人确认')}</p><p>下次做法：${escape(run.preparation.claimedAction || '先问清对方想法，再提出可选择的安排')}</p><p>需要确认：${escape(run.preparation.question || '对方本次的时间、预算和活动意愿是什么？')}</p><p>备选：${escape(run.preparation.fallback || '对方不想续摊时，在公共路口道别。')}</p></section>` : ''}
 ${expectation ? `<section><h2>赴约前的期待</h2><p>${escape(expectation)}</p></section>` : ""}
 ${selected ? `<section><h2>选中的一刻</h2><ul>${timeline([selected])}</ul></section>` : ""}
 <section><h2>现场记录</h2>${run.events.length ? `<ol>${timeline(run.events)}</ol>` : "<p>没有可引用的互动。可以留一个自问：我原本想体验怎样的见面？</p>"}</section>

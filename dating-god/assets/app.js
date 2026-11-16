@@ -9,6 +9,8 @@
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 
   const radar = window.RadarUI.create({api,status,onPractice:startPractice,getDraft:()=>utterance,setDraft:text=>{utterance=String(text);const input=app.querySelector('[name="utterance"]');if(input)input.value=utterance;}});
+  let preparation = window.DatingPreparation.create();
+  let importText = "";
   let modelMode = false;
   let session = null;
   let busy = false;
@@ -84,6 +86,7 @@
 
   function reset(next = "cover") {
     ++generation; retryTurn = null; busy = false; session = null; modelMode = false; utterance = "";
+    preparation = window.DatingPreparation.create();
     config = {
       stage:"first", intent:"undecided", exclusivity:"unspecified", budget:300, timeBudget:180, alcohol:false, experience:"novice", diet:"",
       mode: "mellow", adult: false, presentation: "unspecified", player: "unspecified", traits: [],
@@ -116,7 +119,7 @@
       <h1 tabindex="-1">见面之后</h1>
       <p class="deck">今晚的事，默认留在这一场。</p>
       <p class="cover-note">赴一场虚构的成年约会。你决定往哪走、聊到哪里，也可以随时离开。散场后，想回看再把那一刻带走。</p>
-      ${button("start-model", "模型自由互动", "primary")}${button("start", "离线体验")}<p class="cover-note">模型模式通过本地服务连接模型；离线体验使用预写剧情。模型模式会将本场设置和对话发送至你配置的模型服务。</p>
+      ${button("prepare", "准备一场约会", "primary")}${button("start-model", "模型自由互动")}${button("start", "离线体验")}<p class="cover-note">模型模式通过本地服务连接模型；离线体验使用预写剧情。模型模式会将本场设置和对话发送至你配置的模型服务。</p>
     </div><figure class="window-frame">
       <svg viewBox="0 0 520 408" role="img" aria-label="傍晚咖啡店，两杯咖啡在窗边的桌上">
         <defs><linearGradient id="dusk" x2="0" y2="1"><stop stop-color="#816270"/><stop offset="1" stop-color="#dd9b82"/></linearGradient></defs>
@@ -242,15 +245,18 @@
     const total = hour * 60 + minute + elapsed;
     return [Math.floor(total / 60), total % 60].map((value) => String(value).padStart(2, "0")).join(":");
   }
+  function sceneName(id, context = run || original) {
+    return (context && engine.resolveScene ? engine.resolveScene(context,id) : engine.sceneById(id))?.name || id;
+  }
 
   function log(events) {
     return `<ol class="log">${events.map((event) =>
-      `<li>${event.before?.scene ? `<small>${esc(engine.sceneById(event.before.scene)?.name || event.before.scene)}</small><br>` : ""}<strong>${esc(event.label)}</strong><br>${esc(event.reply)}${event.detail ? `<br>${esc(event.detail)}` : ""}<br><small>${esc(event.effect)}</small></li>`).join("")}</ol>`;
+      `<li>${event.before?.scene ? `<small>${esc(sceneName(event.before.scene))}</small><br>` : ""}<strong>${esc(event.label)}</strong><br>${esc(event.reply)}${event.detail ? `<br>${esc(event.detail)}` : ""}<br><small>${esc(event.effect)}</small></li>`).join("")}</ol>`;
   }
 
   function live() {
-    const role = engine.roleById(run.role);
-    const scene = engine.sceneById(run.scene);
+    const role = engine.resolveRole ? engine.resolveRole(run) : engine.roleById(run.role);
+    const scene = engine.resolveScene ? engine.resolveScene(run) : engine.sceneById(run.scene);
     const start = modelMode ? modelOpening : engine.opening(run);
     const last = run.events.at(-1);
     const paused = run.phase === "paused";
@@ -261,7 +267,7 @@
     const label = run.branchFrom === null ? "约会现场" : "重演 / 同一刻的另一种走法";
     return `<section class="panel">
       <article class="theatre">
-        <p class="kicker">${label} · ${timeLabel(engine.sceneById(run.initialScene || run.scene), run.elapsed)}</p><p class="mode-note">${modes[run.mode || config.mode]} · ${modeHelp[run.mode || config.mode]}</p>
+        <p class="kicker">${label} · ${timeLabel(engine.resolveScene ? engine.resolveScene(run,run.initialScene || run.scene) : engine.sceneById(run.initialScene || run.scene), run.elapsed)}</p><p class="mode-note">${modes[run.mode || config.mode]} · ${modeHelp[run.mode || config.mode]}</p>
         <h1 tabindex="-1">${role.name} · ${run.location}</h1>
         ${paused ? "<p class=\"line\">已经暂停。回到现场时，时间会从这一刻接上。</p>" : `
           ${last?.detail || !last ? `<p class="stage-detail" id="model-detail">${modelMode ? "" : esc(last?.detail || start.detail)}</p>` : ""}
@@ -296,6 +302,7 @@
       ${event ? `<article class="ticket"><p class="meta">这一刻 · 角色实际回应</p><p>「${esc(event.reply)}」</p>
         <p class="subline">这一刻，你在意的是对方给的答案，还是你可以自在地说出自己的选择？也可以都不是。</p>
         ${!alternative ? button("replay", "从这一幕重演") : "<p>重演已完成，回看将分开呈现。</p>"}</article>` : ""}
+      ${original.preparation ? `<div class="form-grid"><h2>赴约准备</h2><p class="subline">只认领你愿意尝试的做法。模拟对象的反应不能代替真人回答。</p>${[['claimedAction','下次做法'],['question','需要向真人确认的问题'],['fallback','可行备选']].map(([key,label])=>`<label class="field"><span>${label}</span><input name="review-prep.${key}" maxlength="300" value="${esc(original.preparation[key]||'')}"></label>`).join('')}</div>` : ""}
       <div class="form-grid">
         <label class="field"><span>想留给自己的便笺（可选）</span><textarea name="note" maxlength="320" placeholder="我当时在意的是……">${esc(draft.note)}</textarea></label>
         ${check("includeNote", "把这条私人便笺也写入 HTML 报告", draft.includeNote)}
@@ -316,7 +323,7 @@
     const experiment = report.experiment(original, exportDraft(), alternative);
     return `<section class="panel">
       ${heading("散场后 / 02", "散场之后", original.outcome)}<div id="radar-host"></div>
-      <article class="ticket"><p class="meta">这场 · ${[...new Set(original.stations || [original.scene])].map(id=>esc(engine.sceneById(id)?.name || id)).join(" → ")}</p>
+      <article class="ticket"><p class="meta">这场 · ${[...new Set(original.stations || [original.scene])].map(id=>esc(sceneName(id,original))).join(" → ")}</p>
       <h2>${approved ? "带走的一点发现" : "留给自己的一个问题"}</h2>
       <p>${esc(approved || "回到那一刻，我最想保留的是怎样的相处方式？")}</p>
       ${experiment ? `<p><strong>下次可试</strong>　${esc(experiment)}</p>` : ""}
@@ -334,7 +341,10 @@
     </section>`;
   }
 
-  const views = { cover, preferences, settings, invitation, live, review, final, practiceReview };
+  function preparationView() {
+    return window.DatingPreparation.render(preparation,library,window.DatingPartnerModel) + (preparation.step >= 2 ? `<div class="panel"><label class="check"><input name="adult" type="checkbox" ${config.adult ? "checked" : ""}>我已年满18岁</label><div class="field-row"><label class="field">本场预算（元）<input name="budget" type="number" min="0" max="100000" value="${config.budget}"></label><label class="field">可用时间（分钟）<input name="timeBudget" type="number" min="5" max="1440" value="${config.timeBudget}"></label></div></div>` : "");
+  }
+  const views = { preparation:preparationView, cover, preferences, settings, invitation, live, review, final, practiceReview };
   function show(next, message = "", focus = true) {
     screen = next;
     app.innerHTML = views[next]();
@@ -383,7 +393,7 @@
   function startDate(role) {
     radar.begin(null);
     if (modelMode) return modelRequest("/api/session", {
-      config:{radarEnabled:true,...(config.practiceRuleId?{practiceRuleId:config.practiceRuleId}:{}),...Object.fromEntries(["adult","scene","player","presentation","avoid","seed","mode","traits","interest","surprise","stage","intent","exclusivity","budget","timeBudget","alcohol","experience","diet"].map(key=>[key,config[key]]))},
+      config:{radarEnabled:true,...(config.practiceRuleId?{practiceRuleId:config.practiceRuleId}:{}),...Object.fromEntries(["adult","scene","player","presentation","avoid","seed","mode","traits","interest","surprise","stage","intent","exclusivity","budget","timeBudget","alcohol","experience","diet","partnerSpec","sceneSpec","preparation"].map(key=>[key,config[key]]))},
       roleId:role.id,
     }, value => {
       radar.begin(value.sessionId);
@@ -417,6 +427,11 @@
 
   app.addEventListener("input", (event) => {
     const { name, value, checked, type } = event.target;
+    if (name === "prep-import") { importText=value; return; }
+    if (name?.startsWith("review-prep.")) { const key=name.slice(12);if(['claimedAction','question','fallback'].includes(key) && original?.preparation)original.preparation[key]=value;return; }
+    if (name?.startsWith("prep.")) { const key=name.slice(5);if(key === "name" || key === "presentation")preparation.partnerSpec[key]=value;else if(Object.hasOwn(preparation,key))preparation[key]=type === "checkbox" ? checked : value;return; }
+    if (name?.startsWith("partner.")) { const [,group,key]=name.split(".");preparation.partnerSpec[group] ||= {};preparation.partnerSpec[group][key]=["interests","hardNo"].includes(key)?value.split(/[,，]/).map(x=>x.trim()).filter(Boolean):value;preparation.partnerSpec.provenance ||= {};preparation.partnerSpec.provenance[group+'.'+key]=value && value!=="unknown" ? "assumption" : "unknown";return; }
+    if (name?.startsWith("lock.")) { const path=name.slice(5);preparation.locks=checked?[...new Set([...preparation.locks,path])]:preparation.locks.filter(x=>x!==path);return; }
     if (name === "utterance") { if (utterance !== value) retryTurn = null; utterance = value; return; }
     if (name === "traits" || name === "avoid") {
       const list = config[name];
@@ -475,6 +490,25 @@
       draft.selected = Number(select);
       show("review", "", false);
       app.querySelector(`[data-select="${select}"]`).focus();
+      return;
+    }
+    if (go?.startsWith("prep-") || go === "prepare") {
+      try {
+        if(go === "prepare") { show("preparation");return; }
+        if(go === "prep-exit") { show("cover");return; }
+        if(go === "prep-next")preparation.step=Math.min(3,preparation.step+1);
+        if(go === "prep-back")preparation.step=Math.max(0,preparation.step-1);
+        if(go === "prep-custom")preparation.source="custom";
+        if(go === "prep-existing") { preparation.source="preset";preparation.presetId=preparation.presetId||library.roles[0].id;preparation.partnerSpec=JSON.parse(JSON.stringify(window.DatingPartnerModel.fromPreset(library.roles.find(r=>r.id===preparation.presetId)))); }
+        if(go === "prep-next" && preparation.source==="preset" && preparation.step===2) preparation.partnerSpec=JSON.parse(JSON.stringify(window.DatingPartnerModel.fromPreset(library.roles.find(r=>r.id===preparation.presetId))));
+        if(go === "prep-random") { const locked={};for(const path of preparation.locks){const [g,k]=path.split('.');locked[g] ||= {};locked[g][k]=preparation.partnerSpec[g]?.[k];}preparation.partnerSpec=JSON.parse(JSON.stringify(window.DatingPartnerModel.random(preparation.partnerSpec,crypto.getRandomValues(new Uint32Array(1))[0],locked)));preparation.source="random"; }
+        if(go === "prep-save") { window.localStorage.setItem("dating-preparation-v1",window.DatingPreparation.exportConfig(preparation));status.textContent="仅保存对象配置，没有保存聊天。";return; }
+        if(go === "prep-export") { download(window.DatingPreparation.exportConfig(preparation),"dating-preparation.json","application/json");return; }
+        if(go === "prep-delete") { window.localStorage.removeItem("dating-preparation-v1");status.textContent="已删除本机配置，本场仍保留。";return; }
+        if(go === "prep-load" || go === "prep-import") { const text=go === "prep-load" ? window.localStorage.getItem("dating-preparation-v1") : importText;if(!text)throw Error("没有可读取的配置");const restored=window.DatingPreparation.importConfig(text);if(!window.DatingPartnerModel.validate(restored.partnerSpec).valid)throw Error("对象配置不合法");preparation=restored; }
+        if(go === "prep-offline" || go === "prep-model") { if(!checkAdult())return;const next=window.DatingPreparation.compile(preparation,config);const validation=window.DatingPartnerModel.validate(next.partnerSpec);if(!validation.valid)throw Error("请调整对象资料："+validation.errors.join("；"));if(go === "prep-model"){if(!/^https?:$/.test(window.location?.protocol||""))throw Error("模型预演需要通过本地服务打开");const info=await api("/api/config");if(!info.available)throw Error("本地服务尚未配置模型");}Object.assign(config,next);modelMode=go === "prep-model";const roles=engine.match(config);if(!roles.length)throw Error("请调整对象与活动条件");startDate(roles[0]);return; }
+        show("preparation");
+      } catch(error) { status.textContent=error.message || "配置操作失败"; }
       return;
     }
     switch (go) {

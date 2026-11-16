@@ -4,13 +4,27 @@
   const presentations = ["woman", "man", "nonbinary", "any", "unspecified"];
   const sceneById = (id) => scenes.find((scene) => scene.id === id);
   const roleById = (id) => roles.find((role) => role.id === id);
+  const sceneModule = () => typeof module !== "undefined" ? require("./preparation-scenes.js") : window.DatingPreparationScenes;
+  const partnerModule = () => typeof module !== "undefined" ? require("./partner-model.js") : window.DatingPartnerModel;
+  const resolveRole = run => run.roleSnapshot || roleById(run.role);
+  const resolveScene = (run,id=run.scene) => run.sceneSnapshot?.id === id ? run.sceneSnapshot : sceneById(id);
+  function configuredScene(config) { return config.sceneSpec ? sceneModule().build(config.sceneSpec) : sceneById(config.scene); }
+  function runtimeRole(config, scene) {
+    if (!config.partnerSpec) return null;
+    const partner=partnerModule().build(config.partnerSpec);
+    return { id:partner.id, name:partner.name||'预演对象', age:partner.age||25,presentation:partner.presentation||'unspecified',pronoun:'TA',players:presentations,scenes:[scene.id,...scenes.map(x=>x.id)],traits:[],interests:[],bio:'基于用户提供的有限印象进行模拟，不预测真人。',reason:'按本场对象假设预演',goal:'先了解彼此，具体安排共同确认',limit:Math.min(config.timeBudget||90,partner.conditions.remainingMinutes??Infinity),obligation:'处理自己的安排',greeting:'我们先从眼前这件事聊起吧。',story:'你想先从哪件具体的事说起？',listen:'我听着，你可以接着说。',quiet:'可以先安静一会儿。',joke:'这个我听懂了。',turnDown:'今天先不延长了。',stayStyle:'leave',nextStyle:'clarify',next:'另行确认的时间地点',proposal:'时间和地点我们再具体商量。',bye:'今天先到这里，路上小心。',partner };
+  }
   function canVisit(run, target) {
-    const role=roleById(run.role);
+    const role=resolveRole(run);
+    if(run.partnerSnapshot && target) {
+      const no=run.partnerSnapshot.conditions.hardNo;
+      if(no.includes('no-second-station')||no.includes('station-offer')||no.includes(target.id)||no.includes('station:'+target.id)||run.partnerState?.refusals?.includes('station:'+target.id))return false;
+    }
     if(!target||target.secondStationAllowed===false||!role.scenes.includes(target.id))return false;
     if(run.elapsed+5+(target.duration||15)>(run.limit??role.limit))return false;
     if(run.budget!==null&&run.budget!==undefined&&(run.spent||0)+(target.cost||0)>run.budget)return false;
     if(target.openingHours){
-      const [h,m]=sceneById(run.initialScene||run.scene).time.split(':').map(Number);
+      const [h,m]=resolveScene(run,run.initialScene||run.scene).time.split(':').map(Number);
       const arrival=h*60+m+run.elapsed+5;
       if(arrival<target.openingHours[0]*60||arrival+(target.duration||15)>target.openingHours[1]*60)return false;
     }
@@ -23,10 +37,13 @@
 
   function match(config) {
     if (config.adult !== true || !presentations.includes(config.presentation)) return [];
-    const scene = sceneById(config.scene);
+    const scene = configuredScene(config);
     if (!scene) return [];
     if (Number.isFinite(config.budget) && (scene.cost || 0) > config.budget) return [];
     if (Number.isFinite(config.timeBudget) && (scene.duration || 0) > config.timeBudget) return [];
+    const custom=runtimeRole(config,scene);
+    if(custom) return (scene.cost||0)>(custom.partner.conditions.budget??Infinity)||(scene.duration||0)>(custom.partner.conditions.remainingMinutes??Infinity)?[]:[custom];
+    if(config.sceneSpec) return roles.filter(role=>role.age>=18 && (["any","unspecified"].includes(config.presentation)||role.presentation===config.presentation)).map(role=>({...role,scenes:[...role.scenes,scene.id]}));
     const preferences = [...new Set(config.traits || [])].filter((key) => Object.hasOwn(traits, key)).slice(0, 3);
     const seed = config.seed >>> 0;
     const score = (role) =>
@@ -43,8 +60,8 @@
   }
 
   function opening(run) {
-    const role = roleById(run.role);
-    const scene = sceneById(run.scene);
+    const role = resolveRole(run);
+    const scene = resolveScene(run);
     let line = role.greeting;
     if (scene.id === "S07" && role.id !== "R08") {
       line = role.traits.includes("curious")
@@ -62,9 +79,11 @@
   function createRun(config, roleId) {
     const role = match(config).find((item) => item.id === roleId);
     if (!role) throw new Error("This match does not meet the current configuration.");
-    const scene = sceneById(config.scene);
+    const scene = configuredScene(config);
+    if(role.partner){config={...config,timeBudget:Math.min(config.timeBudget??Infinity,role.partner.conditions.remainingMinutes??Infinity),budget:Math.min(config.budget??Infinity,role.partner.conditions.budget??Infinity)};if(!Number.isFinite(config.timeBudget))config.timeBudget=90;if(!Number.isFinite(config.budget))config.budget=null;}
     const pick = (key, allowed, fallback) => allowed.includes(config[key]) ? config[key] : fallback;
     return {
+      ...(config.partnerSpec || config.sceneSpec ? {schemaVersion:1,roleSnapshot:JSON.parse(JSON.stringify(role)),sceneSnapshot:JSON.parse(JSON.stringify(scene)),partnerSnapshot:role.partner||null,partnerState:role.partner?partnerModule().createState(config.seed||1):null,preparation:JSON.parse(JSON.stringify(config.preparation||{}))} : {}),
       runId: globalThis.crypto?.randomUUID?.() || `run-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       mode: pick('mode', ['mellow','spark','tension','hard'], 'mellow'),
       stage: pick('stage', ['first','second','friends','flirting','steady'], 'first'),
@@ -84,10 +103,10 @@
 
   function choices(run) {
     if (run.phase !== "live") return [];
-    const scene = sceneById(run.scene);
-    const role = roleById(run.role);
+    const scene = resolveScene(run);
+    const role = resolveRole(run);
     if (run.pendingStation) {
-      const target=sceneById(run.pendingStation);
+      const target=resolveScene(run,run.pendingStation);
       const feasible=canVisit(run,target);
       return [...(feasible?[{id:'station-confirm',label:'确认一起去第二站',type:'station-confirm'}]:[]),
         {id:'station-cancel',label:feasible?'先不换地方':'剩余安排已不够，撤回第二站',type:'station-cancel'},leave];
@@ -141,8 +160,19 @@
     if (expectedTurn !== run.events.length) return run;
     const action = choices(run).find((item) => item.id === id);
     if (!action) return run;
-    const role = roleById(run.role);
-    const scene = sceneById(run.scene);
+    const role = resolveRole(run);
+    const scene = resolveScene(run);
+    if(run.partnerSnapshot && action.type!=='leave') {
+      const target=action.station ? sceneById(action.station) : null;
+      const context={proposalId:action.id,consentRequired:!!action.requiresConsent,consentGranted:false,remainingMinutes:(run.limit??role.limit)-run.elapsed,durationMinutes:target?5+(target.duration||15):action.minutes||0,availableBudget:run.budget===null?null:run.budget-run.spent,cost:target?.cost||action.cost||0};
+      const model=partnerModule(), distribution=model.distribution(run.partnerSnapshot,context,run.partnerState);
+      if(distribution.blocked.length) {
+        const decision=model.decide(run.partnerSnapshot,context,run.partnerState,`${run.runId}:${run.branchFrom}:${run.events.length}`);
+        const reply=decision.strategy==='refuse'?'这个安排我不答应。我们换个可行的，也可以先结束。':'这件事还没有获得同意，先确认清楚再说。';
+        const before=snapshot(run);
+        return {...run,partnerState:decision.state,partnerDecision:{strategy:decision.strategy,distribution},closed:[...run.closed,action.id,...(action.type==='station'?['station-offer']:[])],events:[...run.events,{eventId:`${run.runId}:blocked-${run.events.length}`,action:action.id,label:action.label,reply,detail:'没有执行动作，也没有改变地点或支出。',effect:'对象本次约束阻止了提议',executionStatus:'blocked',radarFacts:{consent:false},tags:action.tags||[],before}]};
+      }
+    }
     const privateSchedule = run.avoid.includes("work");
     const reason = privateSchedule ? "处理自己的安排" : role.obligation;
     const next = { ...run, node: action.to || run.node };
@@ -162,7 +192,7 @@
       let reply,detail='';
       if(action.type === 'station') { next.pendingStation=action.station;next.closed=[...run.closed,'station-offer'];reply=`可以，我还有时间。一起去${sceneById(action.station).name}？你确定的话我们再出发。`; }
       else if(action.type === 'station-cancel') {next.pendingStation=null;reply='好，先在这儿待着。';}
-      else { const target=sceneById(run.pendingStation);if(!target)return run;next.scene=target.id;next.location=target.place;next.node='start';next.activityState={...(target.initialState||{})};next.stations=[...(run.stations||[run.scene]),target.id];next.elapsed=run.elapsed+5;next.spent=(run.spent||0)+(target.cost||0);next.pendingStation=null;reply='走吧，那我们一起过去。';detail=target.intro; }
+      else { const target=resolveScene(run,run.pendingStation);if(!target)return run;next.scene=target.id;next.location=target.place;next.node='start';next.activityState={...(target.initialState||{})};next.stations=[...(run.stations||[run.scene]),target.id];next.elapsed=run.elapsed+5;next.spent=(run.spent||0)+(target.cost||0);next.pendingStation=null;reply='走吧，那我们一起过去。';detail=target.intro; }
       next.events=[...run.events,{eventId,canonicalEventId:eventId,action:id,label:action.label,reply,detail,effect:action.type==='station-confirm'?'双方确认第二站并抵达':'第二站尚待双方确认',tags:[],before:snapshot(run)}];return next;
     }
     next.activityState={...(run.activityState||{}),...(action.patch||{})};
@@ -261,6 +291,17 @@
       next.proposal = null;
       next.outcome = "见面时间到了，双方各自离开。";
     }
+    if(run.partnerSnapshot) {
+      const model=partnerModule();
+      const context={proposalId:action.id,remainingMinutes:(run.limit??role.limit)-run.elapsed,availableBudget:run.budget===null?null:run.budget-run.spent,cost:action.cost||0,consentRequired:!!action.requiresConsent,consentGranted:false,ending:next.phase==='ended',topicRelevant:true};
+      const decision=model.decide(run.partnerSnapshot,context,run.partnerState,eventId);
+      const micro=model.microAction(run.partnerSnapshot,{activity:scene.activityId,waterAvailable:run.activityState.waterAvailable===true,resting:run.node==='rest',hasSchedule:true,nearEnding:context.remainingMinutes<10},decision.state);
+      next.partnerState=micro.state;next.partnerDecision={strategy:decision.strategy,distribution:decision.distribution,microAction:micro.action};
+      const lines={brief:'好，先按这一步来。',elaborate:'我想先把眼前这一步做好，再看看接下来怎么安排。',ask:'这一步你想自己试，还是一起商量？',clarify:'先确认一下，你具体想怎么做？',disagree:'这一步我有不同的想法，我们先各说说。',propose:'可以先各自试一下，需要帮忙再开口。',refuse:'这个安排我先不答应，我们换个可行的。',end:'时间到了，今天就到这里吧。'};
+      if(!['leave','stay','stroll','invite','weekend','confirm','linger'].includes(action.type))reply=lines[decision.strategy];
+      const details={'tie-hair':'TA拿出已有的发圈，把披着的长发扎起。','roll-sleeves':'TA把适合制作的袖口卷起。','adjust-glasses':'TA调整了一下眼镜。','drink-water':'TA拿起现场已有的水喝了一口。','check-time':'TA确认了一下时间。'};
+      if(micro.action)detail=[detail,details[micro.action]].filter(Boolean).join(' ');
+    }
     const event = {
       eventId, canonicalEventId: eventId,
       ...(action.requiresConsent ? { executionStatus: 'requested', radarFacts: { requiresConsent: true } } : {}),
@@ -285,7 +326,7 @@
     if(!order.includes(mode)||order.indexOf(mode)>order.indexOf(run.mode||'mellow'))return run;
     return {...run,mode};
   }
-  const engine = { match, createRun, opening, roleById, sceneById, choices, act, pause, resume, end, replay, setMode };
+  const engine = { canVisit, resolveRole, resolveScene, match, createRun, opening, roleById, sceneById, choices, act, pause, resume, end, replay, setMode };
   if (typeof module !== "undefined") module.exports = engine;
   else window.DatingEngine = engine;
 })();

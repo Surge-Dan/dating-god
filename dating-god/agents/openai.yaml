@@ -1,4 +1,4 @@
 interface:
   display_name: "Dating之神 · Dating God"
-  short_description: "赴一场虚构成年约会，在现场提醒和自查练习中调整表达，散场带走回看与卡片"
-  default_prompt: "使用 $dating-god 开始一场约会。"
+  short_description: "围绕一次约会安排，自定义或随机对象，预演在意的环节并整理赴约建议"
+  default_prompt: "使用 $dating-god，帮我准备一场约会。"

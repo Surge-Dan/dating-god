@@ -7,7 +7,7 @@ const { createDialogueCore, LiveError } = require('./dialogue-core.cjs');
 
 const ASSETS = path.resolve(__dirname, '../assets');
 const STATIC = new Map([
-  ...['radar-rules.js','radar-core.js','radar-store.js','radar-ui.js'].map(file=>['/'+file,[file,'text/javascript; charset=utf-8']]),
+  ...['partner-model.js','preparation-scenes.js','preparation-ui.js','radar-rules.js','radar-core.js','radar-store.js','radar-ui.js'].map(file=>['/'+file,[file,'text/javascript; charset=utf-8']]),
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/index.html', ['index.html', 'text/html; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],

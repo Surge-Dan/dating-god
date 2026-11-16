@@ -8,7 +8,8 @@ const MODES = ['mellow', 'spark', 'tension', 'hard'];
 const MAX_INPUT = 1200;
 const MAX_BODY = 32768;
 const SCHEMA = { type: 'object', properties: { reply: { type: 'string' }, detail: { type: 'string' }, actionId:{type:['string','null']} }, required: ['reply', 'detail', 'actionId'], additionalProperties: false };
-const CONFIG_KEYS = ['adult', 'scene', 'player', 'presentation', 'avoid', 'seed', 'mode', 'traits', 'interest', 'surprise', 'stage', 'intent', 'exclusivity', 'budget', 'timeBudget', 'alcohol', 'experience', 'diet', 'radarEnabled', 'practiceRuleId'];
+const SEMANTIC_SCHEMA = {type:'object',properties:{kind:{type:'string',enum:['speech','question','hypothetical','quoted','performed','proposed','refusal']},actionId:{type:['string','null']},topicRelevant:{type:'boolean'},needsClarification:{type:'boolean'}},required:['kind','actionId','topicRelevant','needsClarification'],additionalProperties:false};
+const CONFIG_KEYS = ['adult', 'scene', 'player', 'presentation', 'avoid', 'seed', 'mode', 'traits', 'interest', 'surprise', 'stage', 'intent', 'exclusivity', 'budget', 'timeBudget', 'alcohol', 'experience', 'diet', 'radarEnabled', 'practiceRuleId', 'partnerSpec', 'sceneSpec', 'preparation'];
 const SETUP_DEFAULTS = { stage:'first', intent:'undecided', exclusivity:'unspecified', budget:300, timeBudget:180, alcohol:false, experience:'novice', diet:'' };
 const emptyTelemetry = () => ({ scope:'session-family', requests:0, succeeded:0, failed:0, cancelled:0, durationMs:0, inputTokens:null, outputTokens:null, totalTokens:null, usageResponses:0 });
 
@@ -27,6 +28,9 @@ function validateSetup(value) {
   exactKeys(value, CONFIG_KEYS);
   if(value.radarEnabled!==undefined && typeof value.radarEnabled!=='boolean') throw bad('提醒设置无效。');
   if(value.practiceRuleId!==undefined && (typeof value.practiceRuleId!=='string'||!require('../assets/radar-rules.js').getRule(value.practiceRuleId))) throw bad('练习目标无效。');
+  if(value.preparation!==undefined) { exactKeys(value.preparation,['focus','brief','assumptions','unknowns','claimedAction','question','fallback']); if(JSON.stringify(value.preparation).length>4000 || Object.values(value.preparation).some(v=>typeof v!=='string' && !(Array.isArray(v)&&v.every(x=>typeof x==='string'))))throw bad('准备任务无效。'); }
+  if(value.partnerSpec!==undefined) { try{require('../assets/partner-model.js').build(value.partnerSpec);}catch(error){throw bad(error.message);} }
+  if(value.sceneSpec!==undefined) { try{require('../assets/preparation-scenes.js').build(value.sceneSpec);}catch(error){throw bad(error.message);} }
   const cfg = { ...SETUP_DEFAULTS, ...value, mode:value.mode || 'mellow' };
   const enums = { mode:MODES, stage:['first','second','friends','flirting','steady'], intent:['casual','serious','undecided'], exclusivity:['unspecified','exclusive','open'], experience:['novice','familiar'], player:['woman','man','nonbinary','unspecified'], presentation:['woman','man','nonbinary','unspecified','any'] };
   if (Object.entries(enums).some(([key,values])=>!values.includes(cfg[key])) || cfg.adult !== true || typeof cfg.scene !== 'string' || !Number.isFinite(cfg.budget) || cfg.budget < 0 || cfg.budget > 100000 || !Number.isInteger(cfg.timeBudget) || cfg.timeBudget < 5 || cfg.timeBudget > 1440 || typeof cfg.alcohol !== 'boolean' || typeof cfg.diet !== 'string' || cfg.diet.length > 160 || (cfg.surprise !== undefined && typeof cfg.surprise !== 'boolean') || (cfg.seed !== undefined && (!Number.isInteger(cfg.seed) || cfg.seed < 0 || cfg.seed > 0xffffffff))) throw bad('会话阶段、偏好、预算或时间设置无效。');
@@ -41,6 +45,8 @@ function memoryFor(run) {
   const earlier = run.events.slice(0,-24);
   return { confirmed:{ agreement:run.agreement, proposal:run.proposal, location:run.location, closed:run.closed, avoid:run.avoid, activityState:run.activityState, stations:run.stations }, earlierEvents:earlier.map((event,index)=>({ turn:index+1, action:event.action, userStatement:event.label, characterSaid:event.reply, visibleDetail:event.detail, effect:event.effect, source:event.source || 'engine' })), boundaries:run.events.filter(event=>event.action==='boundary').map(event=>event.label), turns:run.events.length };
 }
+
+function proposalActions(run){return [...engine.choices(run),...content.scenes.map(scene=>({id:'station:'+scene.id,label:'提议去第二站：'+scene.name,station:scene.id})),{id:'station-offer',label:'提议换第二站'},{id:'stay',label:'提议延长本次约会'},{id:'snap-photo',label:'提出拍照请求'},{id:'ask-again',label:'提议下次见面'}];}
 
 function semanticActions(run) {
   const protectedTypes=['leave','stay','stroll','invite','weekend','confirm','station','station-confirm','station-cancel'];
@@ -97,14 +103,14 @@ function examplesFor(run, input) {
 
 function messagesFor(session, input, candidate) {
   const run = session.run;
-  const role = engine.roleById(run.role);
-  const scene = engine.sceneById(run.scene);
+  const role = engine.resolveRole(run);
+  const scene = engine.resolveScene(run);
   const data = dialogueData();
   const { events, telemetry, ...state } = candidate;
   const latest = candidate.events.at(-1);
   const mode = run.mode || session.mode;
   const roleFacts = Object.fromEntries(['id','name','age','pronoun','bio','goal','limit','obligation','traits','interests'].map(key=>[key,role[key]]));
-  const trusted = { role:roleFacts, profile: data.profiles?.[role.id] || {}, scene: { id: scene.id, name: scene.name, intro: scene.intro, place: scene.place, pacing:scene.pacing }, mode, modeGuide: data.modes?.[mode] || null, state, allowedActions:input.text ? semanticActions(run).map(action=>({id:action.id,label:action.label,minutes:action.minutes,location:action.location})) : [], dynamicIntent:{ stablePurpose:role.goal, stage:run.stage, playerIntent:run.intent, exclusivity:run.exclusivity, remainingMinutes:(run.limit ?? role.limit)-run.elapsed, currentActivity:run.activityState || {}, recentSharedEvents:run.events.slice(-4).map(event=>({action:event.action,effect:event.effect})) }, authoritativeActionResult: input.actionId ? { reply: latest.reply, detail: latest.detail, effect: latest.effect } : null };
+  const trusted = { partnerSnapshot:run.partnerSnapshot||null, localDecision:candidate.partnerDecision||null, role:roleFacts, profile: data.profiles?.[role.id] || {}, scene: { id: scene.id, name: scene.name, intro: scene.intro, place: scene.place, pacing:scene.pacing }, mode, modeGuide: data.modes?.[mode] || null, state, allowedActions:input.text ? semanticActions(run).map(action=>({id:action.id,label:action.label,minutes:action.minutes,location:action.location})) : [], dynamicIntent:{ stablePurpose:role.goal, stage:run.stage, playerIntent:run.intent, exclusivity:run.exclusivity, remainingMinutes:(run.limit ?? role.limit)-run.elapsed, currentActivity:run.activityState || {}, recentSharedEvents:run.events.slice(-4).map(event=>({action:event.action,effect:event.effect})) }, authoritativeActionResult: input.actionId ? { reply: latest.reply, detail: latest.detail, effect: latest.effect } : null };
   const practiceRule = run.practiceRuleId ? require('../assets/radar-rules.js').getRule(run.practiceRuleId) : null;
   const practiceGuide = practiceRule ? '独立微练习：只处理本次虚构场景，不知道用户原历史。以角色口吻回应具体言行；表达自己的需要、追问或不同意见，不做问卷、不出教学评分、不强制原谅。围绕目标机制给用户自然表达的机会，不能为了评判强行制造冒犯；正常例外成立就自然接话。第三次用户回合后本练习结束，本轮回应可以自然收尾。目标与正常反例：'+JSON.stringify({id:practiceRule.id,title:practiceRule.title,premise:practiceRule.premise,counterexample:practiceRule.counterexample,repair:practiceRule.repair}) : '';
   const instructions = [
@@ -149,11 +155,11 @@ async function limitedText(response) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-async function modelReply(provider, messages, controller, recordUsage) {
+async function modelReply(provider, messages, controller, recordUsage, semantic = false) {
   let timedOut = false;
   const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, provider.timeoutMs || 30000);
   try {
-    const response = await fetch(provider.endpoint, { method: 'POST', signal: controller.signal, headers: { Authorization: `Bearer ${provider.apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: provider.model, messages, stream: false, max_completion_tokens: 500, response_format: { type: 'json_schema', json_schema: { name: 'dating_turn', strict: true, schema: SCHEMA } } }) });
+    const response = await fetch(provider.endpoint, { method: 'POST', signal: controller.signal, headers: { Authorization: `Bearer ${provider.apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ model: provider.model, messages, stream: false, max_completion_tokens: 500, response_format: { type: 'json_schema', json_schema: { name: 'dating_turn', strict: true, schema: semantic ? SEMANTIC_SCHEMA : SCHEMA } } }) });
     if (!response.ok) { await response.body?.cancel(); throw new LiveError(502, 'MODEL_UNAVAILABLE', `模型服务返回错误（HTTP ${response.status}）。请检查额度和模型配置；本轮未推进。`); }
     let body;
     try { body = JSON.parse(await limitedText(response)); }
@@ -167,6 +173,10 @@ async function modelReply(provider, messages, controller, recordUsage) {
     let result;
     try { result = JSON.parse(choice.message.content); }
     catch { throw new LiveError(502, 'MODEL_OUTPUT', '模型返回格式无效，本轮未推进。'); }
+    if(semantic) {
+      if(!result||typeof result!=='object'||Array.isArray(result)||Object.keys(result).some(k=>!Object.hasOwn(SEMANTIC_SCHEMA.properties,k))||!['speech','question','hypothetical','quoted','performed','proposed','refusal'].includes(result.kind)||typeof result.topicRelevant!=='boolean'||typeof result.needsClarification!=='boolean'||!(result.actionId===null||typeof result.actionId==='string'))throw new LiveError(502,'SEMANTIC_OUTPUT','语义解析失败，本轮未推进。');
+      return result;
+    }
     if (!result || typeof result !== 'object' || Array.isArray(result) || Object.keys(result).some(key=>!['detail','reply','actionId'].includes(key)) || typeof result.reply !== 'string' || !result.reply.trim() || result.reply.length > 500 || typeof result.detail !== 'string' || result.detail.length > 300 || (result.actionId !== undefined && result.actionId !== null && (typeof result.actionId !== 'string' || !result.actionId || result.actionId.length>100))) throw new LiveError(502, 'MODEL_OUTPUT', '模型返回内容不符合约定，本轮未推进。');
     return { reply: result.reply.trim(), detail: result.detail.trim(), actionId:result.actionId ?? null };
   } catch (error) {
@@ -184,8 +194,8 @@ function freeCandidate(run, text) {
   const next = exit ? engine.end(run) : { ...run };
   const event = { action: exit ? 'leave' : refusal ? 'boundary' : 'say', label: text, reply: exit ? '好。那今天就到这儿，你路上小心。' : refusal ? '好，这个先放下。我们可以换个话题，也可以安静一会儿。' : '', detail: '', effect: exit ? '你选择散场' : refusal ? '你明确表达了边界，本轮不推进时间' : '自由交流', tags: [], source: exit || refusal ? 'engine' : 'model', before: copy(before) };
   if (!exit && !refusal) {
-    const role = engine.roleById(run.role);
-    const scene = engine.sceneById(run.scene);
+    const role = engine.resolveRole(run);
+    const scene = engine.resolveScene(run);
     const minutes = Number.isInteger(scene.talkMinutes) && scene.talkMinutes>0 ? scene.talkMinutes : 4;
     const limit = run.limit ?? Math.min(run.timeBudget ?? Infinity,role.limit);
     next.elapsed = Math.min(run.elapsed + minutes, limit);
@@ -230,7 +240,7 @@ function createDialogueCore(options = {}) {
     prune();
     const id = randomUUID();
     const family = familyId && [...sessions.values()].find(item=>item.familyId===familyId);
-    const session = { id, familyId: familyId || id, version: 0, run:{...run,mode}, mode, opening:copy(opening || engine.opening(run)), telemetry:family ? family.telemetry : emptyTelemetry(), touched: Date.now(), requests: new Map(), pending: null };
+    const session = { id, familyId: familyId || id, version: 0, run:{...run,mode}, mode, opening:copy(opening || engine.opening(run)), telemetry:family ? family.telemetry : emptyTelemetry(), touched: Date.now(), requests: new Map(), decisions:new Map(), pending: null };
     session.radarQuota=family?.radarQuota||{used:0,limit:run.practiceRuleId?4:40};
     if(run.radarEnabled) session.radar=createRadarEvaluator({quota:session.radarQuota,onAttempt(){session.telemetry.requests++;},onFinish(status){session.telemetry[status]++;},request:options.radarRequest || evaluateRadar,onUsage(tokens){for(const key of ['inputTokens','outputTokens','totalTokens'])if(Number.isInteger(tokens[key]))session.telemetry[key]=(session.telemetry[key]??0)+tokens[key];if(Object.values(tokens).some(Number.isInteger))session.telemetry.usageResponses++;}});
     sessions.set(session.id, session);
@@ -245,7 +255,7 @@ function createDialogueCore(options = {}) {
   }
   function visibleSnapshot(session,eventId) {
     const events=[];if(session.run.practiceRuleId)events.push({id:session.id+':opening',order:0,actor:'character',target:'user',text:session.opening.line,committed:true,status:'spoken',kind:'speech'});for(const e of session.run.events){events.push({id:e.eventId,canonicalEventId:e.canonicalEventId||e.eventId,order:events.length,actor:'user',target:'character',text:e.label,committed:true,status:e.executionStatus||'spoken',kind:e.action==='say'||e.action==='boundary'?'speech':'action',actionId:e.action,actionType:e.actionType||e.action,facts:e.radarFacts||{}});events.push({id:e.eventId+':character',order:events.length,actor:'character',target:'user',text:e.reply,committed:true,status:'spoken',kind:'speech'});}
-    return {sourceType:session.run.practiceRuleId?'practice':'simulation',sessionId:session.id,branchId:session.id,activityId:engine.sceneById(session.run.scene)?.activityId||session.run.scene,eventId,events};
+    return {sourceType:session.run.practiceRuleId?'practice':'simulation',sessionId:session.id,branchId:session.id,activityId:engine.resolveScene(session.run)?.activityId||session.run.scene,eventId,events};
   }
   function abort(session) { if (session.pending) { session.pending.controller.abort(); session.pending = null; return true; } return false; }
   return {
@@ -258,9 +268,9 @@ function createDialogueCore(options = {}) {
       let run;
       try { run = engine.createRun(cfg, input.roleId); }
       catch { throw bad('当前角色不满足成年确认、场景或对象偏好条件。'); }
-      for(const key of Object.keys(SETUP_DEFAULTS)) run[key] = cfg[key];
+      for(const key of Object.keys(SETUP_DEFAULTS)) if(!['budget','timeBudget'].includes(key))run[key] = cfg[key];
       run.mode = cfg.mode;run.radarEnabled=cfg.radarEnabled===true;run.practiceRuleId=cfg.practiceRuleId||null;
-      run.limit ??= Math.min(cfg.timeBudget,engine.roleById(run.role).limit);
+      run.limit ??= Math.min(cfg.timeBudget,engine.resolveRole(run).limit);
       let opening;
       if (run.practiceRuleId) {
         const rule = require('../assets/radar-rules.js').getRule(run.practiceRuleId);
@@ -284,7 +294,7 @@ function createDialogueCore(options = {}) {
           '散场、交通与退出':'我今天想先到这里，准备自己坐车回去。谢谢你，我不需要送。',
           '约会之后、联系与长期边界':'我这两天工作忙，可能不会及时回消息。周末有空时再聊，你觉得可以吗？',
         };
-        opening = { detail: engine.sceneById(run.scene).intro, line: context[rule.group] || engine.sceneById(run.scene).opening || engine.opening(run).line };
+        opening = { detail: engine.resolveScene(run).intro, line: context[rule.group] || engine.resolveScene(run).opening || engine.opening(run).line };
         run.practice = { ruleId: rule.id, ruleVersion: rule.version, turnLimit: 3, completed: false, comparableOpportunity: false, sourceType: 'practice' };
       }
       const session = add(run, cfg.mode || 'mellow', undefined, opening);
@@ -323,7 +333,37 @@ function createDialogueCore(options = {}) {
       try {
         if (disconnectSignal?.aborted) pending.controller.abort();
         if (!deterministic) {
+          if(session.run.partnerSnapshot) {
+            let saved=session.decisions.get(fingerprint);
+            if(input.actionId&&candidate.partnerDecision)saved={semantic:{actionId:null},decision:{...candidate.partnerDecision,state:candidate.partnerState},microAction:candidate.partnerDecision.microAction};
+            if(!saved) {
+              let semantic={kind:'performed',actionId:input.actionId||null,topicRelevant:false,needsClarification:false};
+              if(input.text) {
+                session.telemetry.requests++;
+                const semanticStarted=performance.now();
+                try{semantic=await modelReply(provider,[{role:'system',content:'只解析用户输入的可观察意图，输出kind/actionId/topicRelevant/needsClarification。引用、假设、提问都不等于已执行。actionId在performed明确已执行或proposed明确拟提议时选择对应允许id，否则null；proposed只标识提议，不执行动作。不能宣布对象同意或修改任何事实。允许动作：'+JSON.stringify(proposalActions(session.run).map(a=>({id:a.id,label:a.label})))},{role:'user',content:input.text}],pending.controller,tokens=>{let measured=false;for(const key of ['inputTokens','outputTokens','totalTokens'])if(tokens[key]!==null){session.telemetry[key]=(session.telemetry[key]??0)+tokens[key];measured=true;}if(measured)session.telemetry.usageResponses++;},true);session.telemetry.succeeded++;}catch(error){session.telemetry.failed++;throw error;}finally{session.telemetry.durationMs+=Math.max(0,Math.round(performance.now()-semanticStarted));}
+                if(semantic.actionId!==null && ((!['performed','proposed'].includes(semantic.kind))||!(semantic.kind==='performed'?semanticActions(session.run):proposalActions(session.run)).some(a=>a.id===semantic.actionId)))throw new LiveError(502,'SEMANTIC_ACTION','语义解析提出了未允许的动作，本轮未推进。');
+              }
+              const action=proposalActions(session.run).find(a=>a.id===semantic.actionId);
+              const target=action?.station?engine.sceneById(action.station):null;
+              const context={proposalId:action?.id,refused:!!((action?.id.startsWith('station:')||action?.id==='station-offer')&&session.run.partnerSnapshot.conditions.hardNo.some(id=>['station-offer','no-second-station'].includes(id))),question:semantic.kind==='question',topicRelevant:semantic.topicRelevant,needsClarification:semantic.needsClarification,remainingMinutes:(session.run.limit-session.run.elapsed),availableBudget:session.run.budget===null?null:session.run.budget-session.run.spent,durationMinutes:target?5+(target.duration||15):action?.minutes,cost:target?.cost||action?.cost||0,consentRequired:!!action?.requiresConsent,consentGranted:false};
+              const model=require('../assets/partner-model.js');
+              const decision=model.decide(session.run.partnerSnapshot,context,session.run.partnerState,input.requestId);
+              const micro=model.microAction(session.run.partnerSnapshot,{activity:engine.resolveScene(session.run).activityId,waterAvailable:session.run.activityState.waterAvailable===true,resting:session.run.node==='rest',hasSchedule:true,nearEnding:context.remainingMinutes<10},decision.state);
+              saved={semantic,decision:{...decision,state:micro.state},microAction:micro.action};
+              session.decisions.set(fingerprint,copy(saved));
+              if(session.decisions.size>200)session.decisions.delete(session.decisions.keys().next().value);
+            }
+            if(input.text&&saved.semantic.kind==='performed'&&saved.semantic.actionId) {
+              candidate=engine.act(session.run,saved.semantic.actionId,session.run.events.length);
+              const e=candidate.events.at(-1);e.actionLabel=e.label;e.label=input.text.trim();e.interpretedAction=saved.semantic.actionId;
+            }
+            candidate.partnerState=copy(saved.decision.state);
+            candidate.partnerDecision={strategy:saved.decision.strategy,distribution:saved.decision.distribution,microAction:saved.microAction};
+            if(input.text&&saved.microAction){const details={'tie-hair':'TA拿出已有的发圈，把披着的长发扎起。','roll-sleeves':'TA把适合制作的袖口卷起。','adjust-glasses':'TA调整了一下眼镜。','drink-water':'TA拿起现场已有的水喝了一口。','check-time':'TA确认了一下时间。'};candidate.events.at(-1).detail=details[saved.microAction]||'';}
+          }
           const messages = messagesFor(session, input, candidate);
+          if(candidate.partnerDecision)messages[0].content+='\n本轮已经由本地策略决定，不可重选：'+JSON.stringify(candidate.partnerDecision)+'。detail必须为空字符串，小动作由本地引擎呈现。只实现该策略的自然措辞，不能凭空接受提议。微动作只有microAction非空时可按它描述；不得添加其他小动作。actionId必须为null；refuse必须明确拒绝，clarify必须澄清未满足的条件，end必须结束。';
           const started = performance.now();
           session.telemetry.requests += 1;
           let result;
@@ -338,6 +378,11 @@ function createDialogueCore(options = {}) {
             else session.telemetry.failed += 1;
             throw error;
           } finally { session.telemetry.durationMs += Math.max(0,Math.round(performance.now()-started)); }
+          if(candidate.partnerDecision) {
+            const strategy=candidate.partnerDecision.strategy;
+            if(result.detail!=='' || result.actionId!==null || (strategy==='refuse'&&!/不|拒绝|先别|算了|改天/.test(result.reply)) || (strategy==='clarify'&&!/[？?]|先确认|说清|想知道|问清/.test(result.reply)))throw new LiveError(502,'MODEL_STRATEGY_CONFLICT','台词与本轮已确定策略不一致，可以重试，本轮未推进。');
+            if(strategy==='end'){candidate=engine.end(candidate);candidate.outcome='对象按本次条件结束了预演。';candidate.events.at(-1).reply=result.reply;candidate.events.at(-1).effect='对象按本次条件结束预演';}
+          }
           if(result.actionId !== null) {
             if(!input.text || !semanticActions(session.run).some(action=>action.id===result.actionId)) { session.telemetry.failed += 1;throw new LiveError(502,'MODEL_ACTION','模型提出了当前不能执行的动作，本轮未推进。'); }
             candidate=engine.act(session.run,result.actionId,session.run.events.length);
