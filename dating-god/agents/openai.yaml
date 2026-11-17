@@ -1,4 +1,4 @@
 interface:
   display_name: "Dating之神 · Dating God"
-  short_description: "围绕一次约会安排，自定义或随机对象，预演在意的环节并整理赴约建议"
+  short_description: "直接在当前Agent中自定义对象、预演约会、避雷与复盘，无需另配API"
   default_prompt: "使用 $dating-god，帮我准备一场约会。"
