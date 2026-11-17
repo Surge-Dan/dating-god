@@ -75,7 +75,7 @@ Dating之神把这些小场面放进一次独立的虚构成年约会。默认�
 
 <strong>默认无需额外API密钥、独立模型服务或浏览器。</strong>宿主负责理解与台词，本地引擎负责动作、边界和状态。具备本地文件工具与Node.js18+时使用完整引擎；不能执行代码时提供文字预演，不冒充精确状态校验或可下载文件。具体支持取决于宿主能否读取Skill和使用工具，不承诺所有Agent具有相同权限。
 
-宿主用量遵循其自身计费规则，不表示免费，也不会读取ChatGPT登录凭据。`agents/openai.yaml`只是可选展示元数据，运行协议不依赖OpenAI。接入细节见[宿主运行协议](dating-god/references/host-runtime.md)。
+模型用量与费用遵循当前Agent的计费规则。接入细节见[宿主运行协议](dating-god/references/host-runtime.md)。
 
 ### 方式二：选择独立网页（可选）
 
@@ -100,7 +100,7 @@ node dating-god/scripts/live-server.cjs
 
 将两个占位符换成自己的配置，然后打开终端显示的地址，默认是[http://127.0.0.1:3781](http://127.0.0.1:3781)，选择“模型自由互动”。无需安装第三方依赖，按Ctrl+C停止服务。
 
-仅此可选网页服务目前接入OpenAI官方Chat Completions，可能产生API费用，不自动使用ChatGPT订阅额度。这个限制不适用于默认的宿主聊天路径。启动服务和打开页面本身不会调用模型。端口调整、安装后目录用法等见[网页运行说明](dating-god/references/model-runtime.md)。
+可选网页服务目前使用OpenAI官方Chat Completions接口，API费用按服务商规则计算。默认宿主聊天入口无需此配置。启动服务和打开页面本身不会调用模型。端口调整、安装后目录用法等见[网页运行说明](dating-god/references/model-runtime.md)。
 
 <a id="modes"></a>
 
