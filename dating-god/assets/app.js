@@ -30,6 +30,14 @@
     }
     return value;
   }
+  async function detectModel() {
+    if (!/^https?:$/.test(window.location?.protocol || "")) return false;
+    busy = true;
+    const ticket = ++generation;
+    try { return Boolean((await api("/api/config")).available); }
+    catch { return false; }
+    finally { if (ticket === generation) busy = false; }
+  }
   async function modelRequest(path, body, done) {
     if (busy) return;
     busy = true;
@@ -83,10 +91,20 @@
   let candidateIndex;
   let hint;
   let cardPreviewUrl;
+  let recommendedScene;
+  let quickEntry = false;
+  let directPreparation = false;
+
+  function chooseRecommendation(exclude) {
+    const pool = library.scenes.filter(scene => scene.id !== exclude);
+    return pool[crypto.getRandomValues(new Uint32Array(1))[0] % pool.length];
+  }
 
   function reset(next = "cover") {
     ++generation; retryTurn = null; busy = false; session = null; modelMode = false; utterance = "";
     preparation = window.DatingPreparation.create();
+    recommendedScene = chooseRecommendation();
+    quickEntry = directPreparation = false;
     config = {
       stage:"first", intent:"undecided", exclusivity:"unspecified", budget:300, timeBudget:180, alcohol:false, experience:"novice", diet:"",
       mode: "mellow", adult: false, presentation: "unspecified", player: "unspecified", traits: [],
@@ -114,33 +132,34 @@
     `<label class="check"><input type="checkbox" name="${name}" value="${value}"${checked ? " checked" : ""}> <span>${label}</span></label>`;
 
   function cover() {
-    return `<section class="cover"><div>
-      <p class="kicker">约会短篇 / 第一辑</p>
-      <h1 tabindex="-1">见面之后</h1>
-      <p class="deck">今晚的事，默认留在这一场。</p>
-      <p class="cover-note">赴一场虚构的成年约会。你决定往哪走、聊到哪里，也可以随时离开。散场后，想回看再把那一刻带走。</p>
-      ${button("prepare", "准备一场约会", "primary")}${button("start-model", "模型自由互动")}${button("start", "离线体验")}<p class="cover-note">模型模式通过本地服务连接模型；离线体验使用预写剧情。模型模式会将本场设置和对话发送至你配置的模型服务。</p>
-    </div><figure class="window-frame">
-      <svg viewBox="0 0 520 408" role="img" aria-label="傍晚咖啡店，两杯咖啡在窗边的桌上">
-        <defs><linearGradient id="dusk" x2="0" y2="1"><stop stop-color="#816270"/><stop offset="1" stop-color="#dd9b82"/></linearGradient></defs>
-        <rect width="520" height="408" fill="#301c2b"/>
-        <rect x="20" y="20" width="480" height="287" fill="url(#dusk)"/>
-        <circle cx="375" cy="106" r="35" fill="#f8cf9c" opacity=".84"/>
-        <path d="M20 211l60-27 56 34 63-64 83 69 74-36 69 38 75-23v105H20Z" fill="#684251"/>
-        <path d="M20 263h55v-31h59v31h55v-26h85v22h38v-21h46v-22h67v49h75v43H20Z" fill="#4b2c40"/>
-        <path d="M27 21v288m466-288v288M259 20v289M21 160h478M20 304h480" fill="none" stroke="#321d2b" stroke-width="12"/>
-        <path d="M98 348q13-60 47-62m277 62q-13-60-47-62" fill="none" stroke="#a4656a" stroke-width="10"/>
-        <ellipse cx="260" cy="348" rx="170" ry="28" fill="#bc7c74"/>
-        <path d="M90 350q170 51 340 0v14q-170 51-340 0Z" fill="#854756"/>
-        <g fill="#f6debd" stroke="#612a40" stroke-width="3">
-          <ellipse cx="194" cy="340" rx="46" ry="9"/><ellipse cx="324" cy="342" rx="47" ry="9"/>
-          <path d="M162 310h58v10q-2 21-28 22-27-1-30-22Zm58 4q31-8 16 11l-18 3M293 312h58v10q-2 21-28 22-27-1-30-22Zm58 4q31-8 16 11l-18 3"/>
-          <ellipse cx="191" cy="310" rx="29" ry="5" fill="#784052"/><ellipse cx="322" cy="312" rx="29" ry="5" fill="#784052"/>
-        </g>
-        <path d="M188 291q-14-15 1-28m10 28q-7-10 2-20m122 22q-11-14 3-29" fill="none" stroke="#f0cbb3" opacity=".65" stroke-width="2.5"/>
-      </svg>
-      <figcaption>窗边没有空位。门还开着。</figcaption>
-    </figure></section><div id="radar-host"></div>`;
+    const scene = recommendedScene;
+    return `<section class="cover">
+      <h1 tabindex="-1">这场约会，想怎么开始？</h1>
+      <div class="entry-grid">
+        ${button("quick", '<strong>直接用角色库</strong><span>选个场景，再挑一位现成人物。</span>', "entry-choice")}
+        ${button("custom-entry", '<strong>先捏一个对象</strong><span>按你的印象，设定这次想见的人。</span>', "entry-choice")}
+      </div>
+      ${button("journal", "练一个环节", "quiet practice-link")}
+      <div class="recommendation">
+        <p class="meta">随机推荐</p>
+        <h2>${esc(scene.name)}</h2>
+        <p>${esc(scene.description || scene.intro)}</p>
+        <div class="buttons">${button("use-recommendation", "用这个场景", "primary")}${button("reroll", "换个推荐", "quiet")}</div>
+      </div>
+    </section>`;
+  }
+
+  function journal() {
+    return `<section class="panel">${heading("", "我的约会自查簿", "可以挑一个环节练习，也可以回看你选择保留的记录。")}<div id="radar-host"></div></section>`;
+  }
+
+  function navigation() {
+    const inScene = screen === "live";
+    return `<nav class="page-nav" aria-label="网页导航">
+      <span class="brand">Dating之神</span>
+      <div>${inScene ? (run.branchFrom === null ? "约会现场" : "约会重演") :
+        `${button("home", "首页", screen === "cover" ? "nav-current" : "quiet")}${button("journal", "自查簿", screen === "journal" ? "nav-current" : "quiet")}`}</div>
+    </nav>`;
   }
 
   function preferences() {
@@ -182,7 +201,7 @@
           ${Object.entries(library.interests).map(([id, label]) => option(id, label, config.interest)).join("")}
         </select></label>
       </div>
-      <div class="buttons">${button("blind", "直接去盲约", "primary")}${button("settings", "选地点和边界")}${button("reset", "返回封面", "quiet")}</div>
+      <div class="buttons">${button("blind", "直接去盲约", quickEntry ? "quiet" : "primary")}${button("settings", "选地点和边界", quickEntry ? "primary" : "")}${button("reset", "返回封面", "quiet")}</div>
     </section>`;
   }
 
@@ -209,7 +228,8 @@
 
   function settings() {
     return `<section class="panel">
-      ${heading("赴约前 / 02", "这次约在哪里？", "选一个起点。时间和预算用于判断后续安排，卡片金额是剧情估算，不是场馆报价。")}
+      ${heading("", "这次约在哪里？", "选一个想练的场景。卡片上的时间和花费都是模拟安排。")}
+      ${quickEntry ? `<div class="quick-tools">${check("adult", "我已年满18岁", config.adult)}${button("preferences", "调整对象偏好", "quiet")}</div>` : ""}
       <div class="form-grid">
         ${scenePicker()}
         <label class="field"><span>我希望这场约会……（私人便笺，不发送给角色）</span><textarea name="expectation" maxlength="320" placeholder="例如，我想试试说出自己真正喜欢的地点。">${esc(config.expectation)}</textarea></label>
@@ -220,7 +240,7 @@
           ${check("guidance", "开场时给我一个可见的方向", config.guidance)}
         </div></fieldset>
       </div>
-      <div class="buttons">${button("match", "看看见面便笺", "primary")}${button("preferences", "上一步", "quiet")}</div>
+      <div class="buttons">${button("match", quickEntry ? "去选角色" : "看看见面便笺", "primary")}${button(quickEntry ? "home" : "preferences", "上一步", "quiet")}</div>
     </section>`;
   }
 
@@ -232,7 +252,8 @@
     </section>`;
     const identity = config.presentation === "unspecified" ? `${role.age} 岁` : `${role.age} 岁 · ${display[role.presentation]}`;
     return `<section class="panel">
-      ${heading("赴约前 / 03", "一张见面便笺")}
+      ${heading("", quickEntry ? "这次想和谁见面？" : "一张见面便笺")}
+      ${quickEntry ? `<label class="field role-picker"><span>角色库</span><select name="role-choice">${candidates.map((item,index) => option(String(index), esc(item.name), String(candidateIndex))).join("")}</select></label>` : ""}
       <article class="ticket"><p class="meta">${engine.sceneById(config.scene).name} · ${identity}</p><h2>${role.name}</h2>
       ${config.avoid.includes("work") ? "" : `<p>${role.bio}</p><hr class="ticket-rule">`}<p>${role.reason}</p></article>
       <div class="buttons">${button("meet", "按约见面", "primary")}
@@ -263,9 +284,9 @@
     const choices = engine.choices(run);
     const stations = choices.filter(choice=>choice.id.startsWith("station:"));
     const regular = choices.filter(choice=>!choice.id.startsWith("station:"));
-    const actions = (items) => items.map((choice,index)=>`<button type="button" data-action="${esc(choice.id)}" ${busy ? "disabled" : ""} data-turn="${run.events.length}"${index===0 ? ' class="primary"' : ""}>${esc(choice.label)}</button>`).join("");
+    const actions = (items) => items.map((choice,index)=>`<button type="button" data-action="${esc(choice.id)}" ${busy ? "disabled" : ""} data-turn="${run.events.length}"${index===0 && !modelMode ? ' class="primary"' : ""}>${esc(choice.label)}</button>`).join("");
     const label = run.branchFrom === null ? "约会现场" : "重演 / 同一刻的另一种走法";
-    return `<section class="panel">
+    return `<section class="panel live-panel">
       <article class="theatre">
         <p class="kicker">${label} · ${timeLabel(engine.resolveScene ? engine.resolveScene(run,run.initialScene || run.scene) : engine.sceneById(run.initialScene || run.scene), run.elapsed)}</p><p class="mode-note">${modes[run.mode || config.mode]} · ${modeHelp[run.mode || config.mode]}</p>
         <h1 tabindex="-1">${role.name} · ${run.location}</h1>
@@ -273,18 +294,22 @@
           ${last?.detail || !last ? `<p class="stage-detail" id="model-detail">${modelMode ? "" : esc(last?.detail || start.detail)}</p>` : ""}
           <p class="line" id="model-line">「${modelMode ? "" : esc(last?.reply || start.line)}」</p>`}
       </article>
-      <div id="radar-host"></div>
       <div class="control">
         ${paused ? button("resume", "回到现场") : button("pause", "暂停", "quiet")}
         ${!paused ? button("hint", hint ? "收起提示" : "我有点卡住", "quiet") : ""}
-        ${button("radar-coach", "场外教练", "quiet")}${modelMode ? button("radar-preflight", "草稿预检", "quiet") : ""}${button("end", "提前散场", "quiet")}${button("reset", "退出并清空本场", "quiet")}
-        ${Object.keys(modes).indexOf(run.mode || config.mode)>0 ? button("lower-mode", "降低这一场的强度", "quiet") : ""}
+        ${button("end", "提前散场", "quiet")}
+        <details class="scene-tools"><summary>更多</summary><div class="buttons">
+          ${button("radar-coach", "场外教练", "quiet")}${modelMode ? button("radar-preflight", "检查这句草稿", "quiet") : ""}
+          ${Object.keys(modes).indexOf(run.mode || config.mode)>0 ? button("lower-mode", "降低强度", "quiet") : ""}
+          ${button("reset", "退出并清空本场", "quiet")}
+        </div></details>
       </div>
       ${hint && !paused ? `<p class="prompt">可以从眼前的选择出发。${run.events.length ?
         "照自己的节奏决定，也可以先保留意见或道别。" : scene.hint}</p>` : ""}
-      ${modelMode && !paused ? `<label class="field"><span>你想说什么？</span><textarea name="utterance" maxlength="1200" ${busy ? "disabled" : ""}></textarea></label><div class="buttons"><button type="button" data-go="send" ${busy ? "disabled" : ""}>${busy ? "正在回应…" : "发送"}</button>${busy ? button("cancel", "取消本次请求") : ""}</div>` : ""}
+      ${modelMode && !paused ? `<label class="field"><span>你想说什么？</span><textarea name="utterance" maxlength="1200" ${busy ? "disabled" : ""}></textarea></label><div class="buttons"><button type="button" data-go="send" class="primary" ${busy ? "disabled" : ""}>${busy ? "正在回应…" : "发送"}</button>${busy ? button("cancel", "取消本次请求") : ""}</div>` : ""}
       ${paused ? "" : `<div class="steps" aria-label="你想怎么做">${actions(regular)}</div>`}
       ${!paused && stations.length ? `<details class="station-options"><summary>还有时间，提议一起去第二站</summary><p class="subline">只显示本场时间和预算允许的活动。先提出，双方再确认出发。</p><div class="steps">${actions(stations)}</div></details>` : ""}
+      <div id="radar-host"></div>
       ${run.events.length && !paused ? `<details><summary>看看已经发生的事</summary>${log(run.events)}</details>` : ""}
     </section>`;
   }
@@ -292,8 +317,8 @@
   function review() {
     const event = original.events[draft.selected];
     const suggestion = report.choices(original, draft.selected);
-    return `<section class="panel">
-      ${heading("散场后 / 01", "想回看哪一刻？", original.outcome)}<div id="radar-host"></div>
+    return `<section class="panel review-panel">
+      ${heading("散场后 / 01", "想回看哪一刻？", original.outcome)}
       ${config.expectation.trim() ? `<article class="ticket"><p class="meta">赴约前写给自己的期待</p><p>${esc(config.expectation)}</p>
         ${check("includeExpectation", "把这条期待也写入 HTML 报告", draft.includeExpectation)}</article>` : ""}
       ${original.events.length ? `<div class="steps" aria-label="选一个回合">${original.events.map((item, index) =>
@@ -311,6 +336,7 @@
         ${check("confirmed", "这句话是我认领的发现，可用于报告和 Dating 卡", draft.confirmed)}
       </div>
       <div class="buttons">${button("final", "查看这场回看", "primary")}${button("save-home", "结束并保存已完成摘要")}${button("reset", "不回看，结束这场", "quiet")}</div>
+      <div id="radar-host"></div>
     </section>`;
   }
 
@@ -321,8 +347,8 @@
   function final() {
     const approved = report.claim(original, exportDraft(), alternative);
     const experiment = report.experiment(original, exportDraft(), alternative);
-    return `<section class="panel">
-      ${heading("散场后 / 02", "散场之后", original.outcome)}<div id="radar-host"></div>
+    return `<section class="panel report-panel">
+      ${heading("散场后 / 02", "散场之后", original.outcome)}
       <article class="ticket"><p class="meta">这场 · ${[...new Set(original.stations || [original.scene])].map(id=>esc(sceneName(id,original))).join(" → ")}</p>
       <h2>${approved ? "带走的一点发现" : "留给自己的一个问题"}</h2>
       <p>${esc(approved || "回到那一刻，我最想保留的是怎样的相处方式？")}</p>
@@ -338,16 +364,19 @@
       <div class="buttons">${button("download-report", "下载 HTML 回看", "primary")}
         ${approved ? button("download-card", "下载 Dating 卡（SVG）") : ""}
         ${button("review", "返回调整", "quiet")}${button("save-home", "结束并保存已完成摘要", "quiet")}${button("reset", "结束并清空这场", "quiet")}</div>
+      <div id="radar-host"></div>
     </section>`;
   }
 
   function preparationView() {
-    return window.DatingPreparation.render(preparation,library,window.DatingPartnerModel) + (preparation.step >= 2 ? `<div class="panel"><label class="check"><input name="adult" type="checkbox" ${config.adult ? "checked" : ""}>我已年满18岁</label><div class="field-row"><label class="field">本场预算（元）<input name="budget" type="number" min="0" max="100000" value="${config.budget}"></label><label class="field">可用时间（分钟）<input name="timeBudget" type="number" min="5" max="1440" value="${config.timeBudget}"></label></div></div>` : "");
+    const budgetFields = `<div class="field-row"><label class="field">本场预算（元）<input name="budget" type="number" min="0" max="100000" value="${config.budget}"></label><label class="field">可用时间（分钟）<input name="timeBudget" type="number" min="5" max="1440" value="${config.timeBudget}"></label></div>`;
+    const adultField = `<fieldset class="adult-gate"><legend>开始前确认</legend>${check("adult", "我已年满18岁", config.adult)}</fieldset>`;
+    return window.DatingPreparation.render(preparation, library, {budgetFields, adultField, currentScene:config.scene});
   }
-  const views = { preparation:preparationView, cover, preferences, settings, invitation, live, review, final, practiceReview };
+  const views = { preparation:preparationView, cover, journal, preferences, settings, invitation, live, review, final, practiceReview };
   function show(next, message = "", focus = true) {
     screen = next;
-    app.innerHTML = views[next]();
+    app.innerHTML = navigation() + views[next]();
     if (modelMode && next === "live") {
       const last = run.events.at(-1);
       const line = app.querySelector("#model-line");
@@ -357,10 +386,10 @@
       const input = app.querySelector('[name="utterance"]');
       if (input) input.value = utterance;
     }
-    radar.mount(next === "cover");
+    radar.mount(next === "journal");
     status.textContent = message;
     refreshCardPreview();
-    if (focus) app.querySelector("h1")?.focus();
+    if (focus) app.querySelector("h1")?.focus({preventScroll:false});
   }
 
   function refreshCardPreview() {
@@ -427,10 +456,38 @@
 
   app.addEventListener("input", (event) => {
     const { name, value, checked, type } = event.target;
+    if (name === "role-choice" && candidates[Number(value)]) {
+      candidateIndex = Number(value);
+      show("invitation", "", false);
+      app.querySelector('[name="role-choice"]')?.focus();
+      return;
+    }
     if (name === "prep-import") { importText=value; return; }
     if (name?.startsWith("review-prep.")) { const key=name.slice(12);if(['claimedAction','question','fallback'].includes(key) && original?.preparation)original.preparation[key]=value;return; }
-    if (name?.startsWith("prep.")) { const key=name.slice(5);if(key === "name" || key === "presentation")preparation.partnerSpec[key]=value;else if(Object.hasOwn(preparation,key))preparation[key]=type === "checkbox" ? checked : value;return; }
-    if (name?.startsWith("partner.")) { const [,group,key]=name.split(".");preparation.partnerSpec[group] ||= {};preparation.partnerSpec[group][key]=["interests","hardNo"].includes(key)?value.split(/[,，]/).map(x=>x.trim()).filter(Boolean):value;preparation.partnerSpec.provenance ||= {};preparation.partnerSpec.provenance[group+'.'+key]=value && value!=="unknown" ? "assumption" : "unknown";return; }
+    if (name?.startsWith("prep.")) {
+      const key = name.slice(5);
+      if (key === "name" || key === "presentation") preparation.partnerSpec[key] = value;
+      else if (Object.hasOwn(preparation, key)) preparation[key] = type === "checkbox" ? checked : value;
+      if (key === "name") {
+        const preview = document.getElementById("partner-preview-name");
+        if (preview) preview.textContent = value.trim() || "未命名对象";
+      }
+      if (key === "template") {
+        const trackFields = app.querySelector(".track-fields");
+        if (trackFields) trackFields.hidden = value !== "track";
+      }
+      return;
+    }
+    if (name?.startsWith("partner.")) {
+      const [,group,key] = name.split(".");
+      preparation.partnerSpec[group] ||= {};
+      preparation.partnerSpec[group][key] = ["interests","hardNo"].includes(key) ? value.split(/[,，]/).map(x=>x.trim()).filter(Boolean) : value;
+      preparation.partnerSpec.provenance ||= {};
+      preparation.partnerSpec.provenance[group+"."+key] = value && value !== "unknown" ? "assumption" : "unknown";
+      const expression = document.getElementById("partner-preview-expression");
+      if (key === "expression" && expression) expression.textContent = window.DatingPreparation.expressionLabel(value);
+      return;
+    }
     if (name?.startsWith("lock.")) { const path=name.slice(5);preparation.locks=checked?[...new Set([...preparation.locks,path])]:preparation.locks.filter(x=>x!==path);return; }
     if (name === "utterance") { if (utterance !== value) retryTurn = null; utterance = value; return; }
     if (name === "traits" || name === "avoid") {
@@ -467,6 +524,7 @@
     const target = event.target.closest("button");
     if (!target) return;
     const { go, action, turn, select, scene } = target.dataset;
+    if (busy && screen !== "live" && go !== "reset") return;
     if (scene) {
       if (!library.scenes.some(item=>item.id===scene)) return;
       config.scene = scene;
@@ -497,7 +555,10 @@
         if(go === "prepare") { show("preparation");return; }
         if(go === "prep-exit") { show("cover");return; }
         if(go === "prep-next")preparation.step=Math.min(3,preparation.step+1);
-        if(go === "prep-back")preparation.step=Math.max(0,preparation.step-1);
+        if (go === "prep-back") {
+          if (directPreparation && preparation.step === 1) { show("cover"); return; }
+          preparation.step = Math.max(0, preparation.step - 1);
+        }
         if(go === "prep-custom")preparation.source="custom";
         if(go === "prep-existing") { preparation.source="preset";preparation.presetId=preparation.presetId||library.roles[0].id;preparation.partnerSpec=JSON.parse(JSON.stringify(window.DatingPartnerModel.fromPreset(library.roles.find(r=>r.id===preparation.presetId)))); }
         if(go === "prep-next" && preparation.source==="preset" && preparation.step===2) preparation.partnerSpec=JSON.parse(JSON.stringify(window.DatingPartnerModel.fromPreset(library.roles.find(r=>r.id===preparation.presetId))));
@@ -506,12 +567,49 @@
         if(go === "prep-export") { download(window.DatingPreparation.exportConfig(preparation),"dating-preparation.json","application/json");return; }
         if(go === "prep-delete") { window.localStorage.removeItem("dating-preparation-v1");status.textContent="已删除本机配置，本场仍保留。";return; }
         if(go === "prep-load" || go === "prep-import") { const text=go === "prep-load" ? window.localStorage.getItem("dating-preparation-v1") : importText;if(!text)throw Error("没有可读取的配置");const restored=window.DatingPreparation.importConfig(text);if(!window.DatingPartnerModel.validate(restored.partnerSpec).valid)throw Error("对象配置不合法");preparation=restored; }
-        if(go === "prep-offline" || go === "prep-model") { if(!checkAdult())return;const next=window.DatingPreparation.compile(preparation,config);const validation=window.DatingPartnerModel.validate(next.partnerSpec);if(!validation.valid)throw Error("请调整对象资料："+validation.errors.join("；"));if(go === "prep-model"){if(!/^https?:$/.test(window.location?.protocol||""))throw Error("模型预演需要通过本地服务打开");const info=await api("/api/config");if(!info.available)throw Error("本地服务尚未配置模型");}Object.assign(config,next);modelMode=go === "prep-model";const roles=engine.match(config);if(!roles.length)throw Error("请调整对象与活动条件");startDate(roles[0]);return; }
+        if (["prep-offline", "prep-model", "prep-auto"].includes(go)) {
+          if (busy || !checkAdult()) return;
+          const next = window.DatingPreparation.compile(preparation, config, library);
+          const validation = window.DatingPartnerModel.validate(next.partnerSpec);
+          if (!validation.valid) throw Error("请调整对象资料："+validation.errors.join("；"));
+          const roles = engine.match(next);
+          if (!roles.length) throw Error("请调整对象与活动的预算或时间。");
+          const useModel = go !== "prep-offline" && await detectModel();
+          if (go === "prep-model" && !useModel) throw Error("自由输入暂不可用，可以用点选开始。");
+          if (screen !== "preparation") return;
+          Object.assign(config, next);
+          modelMode = useModel;
+          return startDate(roles[0]);
+        }
         show("preparation");
       } catch(error) { status.textContent=error.message || "配置操作失败"; }
       return;
     }
     switch (go) {
+      case "home":
+        if (screen !== "live" && !busy) show("cover");
+        break;
+      case "journal":
+        if (screen !== "live" && !busy) show("journal");
+        break;
+      case "reroll":
+        recommendedScene = chooseRecommendation(recommendedScene.id);
+        show("cover", "", false);
+        app.querySelector('[data-go="reroll"]')?.focus();
+        break;
+      case "use-recommendation":
+        config.scene = recommendedScene.id;
+        // The recommendation only preselects a scene. Nothing starts here.
+        quickEntry = true; modelMode = false; show("settings");
+        break;
+      case "quick":
+        quickEntry = true; modelMode = false; show("settings");
+        break;
+      case "custom-entry":
+        directPreparation = true;
+        if (preparation.step === 0) preparation.step = 1;
+        show("preparation");
+        break;
       case "start-model": {
         if (!/^https?:$/.test(window.location?.protocol || "")) { status.textContent = "模型自由互动需要通过本地服务打开网页。"; break; }
         if (busy) break;
@@ -547,7 +645,11 @@
       case "blind": {
         if (!checkAdult() || !checkPlan()) break;
         const eligible = engine.match(config);
-        if (eligible.length) startDate(eligible[0]);
+        if (eligible.length) {
+          if (quickEntry) modelMode = await detectModel();
+          if (screen !== "preferences") break;
+          startDate(eligible[0]);
+        }
         else show("invitation");
         break;
       }
@@ -558,7 +660,11 @@
         show("invitation");
         break;
       case "swap": candidateIndex = (candidateIndex + 1) % candidates.length; show("invitation"); break;
-      case "meet": if (checkPlan()) startDate(candidates[candidateIndex]); break;
+      case "meet":
+        if (!candidates[candidateIndex] || !checkPlan() || busy) break;
+        if (quickEntry) modelMode = await detectModel();
+        if (screen !== "invitation") break;
+        return startDate(candidates[candidateIndex]);
       case "pause": if (modelMode) return control("pause"); run = engine.pause(run); show("live"); break;
       case "resume": if (modelMode) return control("resume"); run = engine.resume(run); show("live"); break;
       case "hint":

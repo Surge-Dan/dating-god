@@ -85,13 +85,25 @@ test("page gates blind dates, renders a replay, and downloads exactly what it pr
   assert.match(page.status.textContent, /年满 18 岁/);
 });
 
-test("model entry is explicit and file mode never falls back to scripted dialogue", async () => {
+test("recommended scene is replaceable before opening and the role library starts the selected scene", async () => {
   const page = openPage();
-  assert.match(page.view.innerHTML, /模型自由互动/);
-  assert.match(page.view.innerHTML, /离线体验/);
-  await page.click({go:"start-model"});
-  assert.match(page.status.textContent, /本地服务/);
-  assert.match(page.view.innerHTML, /模型自由互动/);
+  const go = id => page.click({go:id});
+  assert.match(page.view.innerHTML, /直接用角色库/);
+  assert.match(page.view.innerHTML, /先捏一个对象/);
+  const first = page.view.innerHTML.match(/<h2>([^<]+)<\/h2>/)[1];
+  await go("reroll");
+  assert.notEqual(page.view.innerHTML.match(/<h2>([^<]+)<\/h2>/)[1], first);
+  await go("use-recommendation");
+  assert.match(page.view.innerHTML, /这次约在哪里/);
+  await page.click({scene:"A08"});
+  await go("match");
+  assert.match(page.status.textContent, /年满 18 岁/);
+  page.input("adult", true);
+  await go("match");
+  assert.match(page.view.innerHTML, /角色库/);
+  await go("meet");
+  assert.match(page.view.innerHTML, /公园公共东门/);
+  assert.doesNotMatch(page.view.innerHTML, /name="utterance"/);
 });
 
 
@@ -227,7 +239,7 @@ test("offline blocked photo produces a private short card and honors immersion t
  await page.click({radar:"toggle",id:""});assert.match(page.radarHost.innerHTML,/class="radar-card"/);
 });
 test("home groups practice rules and completes exactly three independent rounds",async()=>{
- const page=openPage();await new Promise(resolve=>setImmediate(resolve));
+ const page=openPage();await page.click({go:"journal"});await new Promise(resolve=>setImmediate(resolve));
  assert.match(page.radarHost.innerHTML,/还没有保存的记录/);assert.match(page.radarHost.innerHTML,/radar-practice-group/);
  page.element("radar-practice-rule","D04-01");await page.click({radar:"practice-chosen",id:""});
  assert.match(page.radarHost.innerHTML,/独立微练习/);
@@ -240,6 +252,23 @@ test('preparation entry advances through assumptions and confirmation without re
 
 test('custom and randomized locked partners enter real perler and tennis scenes and finish',async()=>{for(const template of ['perler','tennis']){const page=openPage();const go=id=>page.click({go:id});await go('prepare');page.input('prep.brief','练习共同活动');await go('prep-next');page.input('partner.appearance.hairLength','long');page.input('lock.appearance.hairLength',true);page.input('partner.interaction.expression','reserved');await go('prep-random');assert.match(page.view.innerHTML,/<option value="long" selected>/);page.input('partner.interaction.expression','outgoing');await go('prep-next');page.input('prep.template',template);page.input('prep.place','周末活动店');await go('prep-next');page.input('adult',true);await go('prep-offline');assert.equal(page.status.textContent,'');assert.match(page.view.innerHTML,/暂停/);assert.match(page.view.innerHTML,/周末活动店/);await go('end');assert.match(page.view.innerHTML,/回看|散场|带走/);}});
 
-test('preparation config persists without conversation and can be deleted independently',async()=>{const stored=new Map();const page=openPage({window:{localStorage:{setItem:(k,v)=>stored.set(k,v),getItem:k=>stored.get(k),removeItem:k=>stored.delete(k)}}});await page.click({go:'prepare'});page.input('prep.brief','周末准备');await page.click({go:'prep-save'});const raw=[...stored.values()][0];assert.match(raw,/周末准备/);assert.ok(!/events|transcript|messages/.test(raw));await page.click({go:'prep-exit'});assert.match(page.view.innerHTML,/准备一场约会/);await page.click({go:'prepare'});await page.click({go:'prep-delete'});assert.equal(stored.size,0);});
+test('preparation config persists without conversation and can be deleted independently',async()=>{const stored=new Map();const page=openPage({window:{localStorage:{setItem:(k,v)=>stored.set(k,v),getItem:k=>stored.get(k),removeItem:k=>stored.delete(k)}}});await page.click({go:'prepare'});page.input('prep.brief','周末准备');await page.click({go:'prep-save'});const raw=[...stored.values()][0];assert.match(raw,/周末准备/);assert.ok(!/events|transcript|messages/.test(raw));await page.click({go:'prep-exit'});assert.match(page.view.innerHTML,/先捏一个对象/);await page.click({go:'prepare'});await page.click({go:'prep-delete'});assert.equal(stored.size,0);});
 
 test('existing role presets stay within preparation confirmation and reach the date',async()=>{const page=openPage();const go=id=>page.click({go:id});await go('prepare');await go('prep-next');await go('prep-existing');assert.match(page.view.innerHTML,/现成人物预设/);await go('prep-next');await go('prep-next');assert.match(page.view.innerHTML,/本次预演卡/);page.input('adult',true);await go('prep-offline');assert.equal(page.status.textContent,'');assert.match(page.view.innerHTML,/暂停/);await go('end');page.input('review-prep.claimedAction','先问对方有没有兴趣');await go('final');assert.match(page.view.innerHTML,/赴约准备|这场/);});
+
+test("custom entry keeps the object draft and can start a built-in scene with no location text", async () => {
+  const page = openPage();
+  const go = id => page.click({go:id});
+  await go("custom-entry");
+  page.input("prep.name","小棠");
+  await go("home");
+  await go("custom-entry");
+  assert.match(page.view.innerHTML, /小棠/);
+  await go("prep-next");
+  page.input("prep.template","A08");
+  await go("prep-next");
+  assert.match(page.view.innerHTML, /公园散步/);
+  page.input("adult",true);
+  await go("prep-auto");
+  assert.match(page.view.innerHTML, /小棠 · 公园公共东门/);
+});
