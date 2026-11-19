@@ -94,6 +94,13 @@
   let recommendedScene;
   let quickEntry = false;
   let directPreparation = false;
+  let preferredRoleId = null;
+  let selectedRoleId = null;
+  let roleSearch = "";
+  let roleDetailOpen = false;
+  let sceneCatalogSelected = null;
+  let sceneCatalogCategory = "全部";
+  let sceneDetailOpen = false;
 
   function chooseRecommendation(exclude) {
     const pool = library.scenes.filter(scene => scene.id !== exclude);
@@ -105,6 +112,13 @@
     preparation = window.DatingPreparation.create();
     recommendedScene = chooseRecommendation();
     quickEntry = directPreparation = false;
+    preferredRoleId = null;
+    selectedRoleId = null;
+    roleSearch = "";
+    roleDetailOpen = false;
+    sceneCatalogSelected = recommendedScene.id;
+    sceneCatalogCategory = "全部";
+    sceneDetailOpen = false;
     config = {
       stage:"first", intent:"undecided", exclusivity:"unspecified", budget:300, timeBudget:180, alcohol:false, experience:"novice", diet:"",
       mode: "mellow", adult: false, presentation: "unspecified", player: "unspecified", traits: [],
@@ -119,7 +133,7 @@
     candidates = [];
     candidateIndex = 0;
     hint = false;
-    show(next);
+    show(next, "", true, {replace:true});
   }
 
   const button = (id, label, style = "") =>
@@ -131,22 +145,59 @@
   const check = (name, label, checked, value = "") =>
     `<label class="check"><input type="checkbox" name="${name}" value="${value}"${checked ? " checked" : ""}> <span>${label}</span></label>`;
 
+  const icon = (name) => ({
+    people:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 20v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 18.5V20m6-9a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm6-6a3.5 3.5 0 0 1 0 6.8m1 3.2a3.5 3.5 0 0 1 3 3.5V20"/></svg>',
+    edit:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5 5 5M4 20l4.2-.8L19 8.4a2.1 2.1 0 0 0-3-3L5.2 16.2 4 20Z"/><path d="M4 20h16"/></svg>',
+    map:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10c0 5-8 11-8 11S4 15 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2.5"/></svg>',
+    note:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5zM8 8h8M8 12h8m-8 4h5"/><path d="m16 3 3 3"/></svg>',
+    refresh:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.5 9a7 7 0 0 1 11.8-2L20 12M4 12l2.7 5a7 7 0 0 0 11.8-2"/></svg>',
+  })[name] || "";
+
   function cover() {
     const scene = recommendedScene;
-    return `<section class="cover">
-      <h1 tabindex="-1">这场约会，想怎么开始？</h1>
-      <div class="entry-grid">
-        ${button("quick", '<strong>直接用角色库</strong><span>选个场景，再挑一位现成人物。</span>', "entry-choice")}
-        ${button("custom-entry", '<strong>先捏一个对象</strong><span>按你的印象，设定这次想见的人。</span>', "entry-choice")}
+    const shortcuts = library.scenes.slice(0, 4);
+    return `<section class="cover home-page">
+      <header class="home-heading"><p class="kicker">Dating之神 · 约会预演工具</p><h1 tabindex="-1">先赴一场像真的约会，<br>再带走复盘。</h1><p class="home-deck">从一个真实的见面计划开始。你可以先认识角色、自己捏对象，或只练一个卡住的瞬间。</p></header>
+      <div class="home-layout">
+        <section class="home-start" aria-labelledby="home-start-title"><p class="section-eyebrow" id="home-start-title">今天想怎么开始</p>
+          <button type="button" data-go="quick" class="home-path"><span class="home-path-icon">${icon("people")}</span><span class="home-path-copy"><strong>从角色库挑一个人</strong><small>看见TA的生活、说话方式和适配场景</small></span><span class="home-path-arrow" aria-hidden="true">↗</span></button>
+          <button type="button" data-go="custom-entry" class="home-path"><span class="home-path-icon home-path-icon-blue">${icon("edit")}</span><span class="home-path-copy"><strong>按你的印象捏一个人</strong><small>设定性格与边界，未知的地方可以留白</small></span><span class="home-path-arrow" aria-hidden="true">↗</span></button>
+          <p class="home-footnote">两种方式都会先确认场景与练习重点。成年确认后才会开始；不需要填真实姓名。</p>
+        </section>
+        <aside class="practice-slip" aria-labelledby="practice-slip-title"><div class="slip-topline"><span>这一刻，先练一遍</span><span class="slip-stamp">散场练习</span></div><span class="slip-scene">公园散步&nbsp; / &nbsp;对方临时想早点回家</span><h2 id="practice-slip-title">到点了，怎么自然收尾？</h2><p>接受对方的安排、表达自己的期待，或者看看坚持续摊会发生什么。每个选择都会带来不同回应。</p><div class="slip-footer"><span>一段可重来的分支练习</span>${button("journal", "开始这段练习", "primary")}</div><span class="slip-mark" aria-hidden="true">01</span></aside>
       </div>
-      ${button("journal", "练一个环节", "quiet practice-link")}
-      <div class="recommendation">
-        <p class="meta">随机推荐</p>
-        <h2>${esc(scene.name)}</h2>
-        <p>${esc(scene.description || scene.intro)}</p>
-        <div class="buttons">${button("use-recommendation", "用这个场景", "primary")}${button("reroll", "换个推荐", "quiet")}</div>
-      </div>
+      <section class="scene-recommendation" aria-label="随机推荐场景"><span class="scene-recommendation-icon">${icon("map")}</span><div class="scene-recommendation-copy"><p class="section-eyebrow">今天的随机推荐</p><h2 data-scene-name="${esc(scene.name)}">${esc(scene.name)}</h2><p>${esc(scene.description||scene.intro||"从眼前的小事自然开始。")}</p></div><div class="scene-recommendation-actions">${button("use-recommendation", "用这个场景", "primary")}${button("reroll", `${icon("refresh")}换一个推荐`, "quiet")}</div></section>
+      <section class="home-scenes" aria-labelledby="home-scenes-title"><div class="home-scenes-head"><div><p class="section-eyebrow">也可以从地点开始</p><h2 id="home-scenes-title">先想好去哪，再慢慢挑人</h2></div>${button("all-scenes", "浏览全部场景　→", "quiet")}</div><div class="home-scene-list">${shortcuts.map(item=>`<button type="button" data-home-scene="${esc(item.id)}" class="home-scene"><span class="mini-pin">${icon("map")}</span><span><strong>${esc(item.name)}</strong><small>${esc(item.category||"见面活动")}</small></span><span class="home-scene-arrow" aria-hidden="true">↗</span></button>`).join("")}</div></section>
+      <p class="home-note"><span>✳</span> 角色是虚构的，互动是排练；现实里的感受和边界，始终由你决定。</p>
     </section>`;
+  }
+
+  function roleLibrary() {
+    const query = roleSearch.trim().toLocaleLowerCase();
+    const roles = library.roles.filter(role => !query || [role.name,role.bio,role.reason,...role.interests.map(id=>library.interests[id]||id),...role.traits.map(id=>library.traits[id]||id)].join(" ").toLocaleLowerCase().includes(query));
+    if (!roles.some(role=>role.id===selectedRoleId)) selectedRoleId=roles[0]?.id||null;
+    const selected = roles.find(role=>role.id===selectedRoleId) || null;
+    const labelPresentation = {woman:"女性",man:"男性",nonbinary:"非二元",unspecified:"未指定"};
+    const sceneLabels = (selected?.scenes||[]).map(id=>engine.sceneById(id)?.name).filter(Boolean);
+    const selectedTraits = (selected?.traits||[]).map(id=>library.traits[id]).filter(Boolean);
+    const selectedInterests = (selected?.interests||[]).map(id=>library.interests[id]).filter(Boolean);
+    const supportedModes = (selected?.modes||Object.keys(modes)).map(id=>modes[id]).filter(Boolean);
+    return `<section class="panel role-library ${roleDetailOpen?"is-detail":""}">
+      <div class="page-intro"><p class="kicker">赴约方式 / 01</p><h1 tabindex="-1">先认识一个人</h1><p class="subline">角色不是标签拼盘。每个人都有自己的安排、兴趣和说话节奏；挑一个你愿意认识的人。</p></div>
+      <div class="library-toolbar"><label class="search-field"><span class="sr-only">搜索角色</span><span class="search-icon" aria-hidden="true">⌕</span><input name="role-search" type="search" value="${esc(roleSearch)}" placeholder="搜名字、兴趣或相处方式" autocomplete="off"></label><span class="library-count">${roles.length}位角色</span></div>
+      <div class="library-layout"><div class="role-list" aria-label="角色列表">${roles.length?roles.map(role=>`<button type="button" data-role="${esc(role.id)}" class="role-row" aria-pressed="${selected?.id===role.id}"><span class="role-initial" aria-hidden="true">${esc(role.name.slice(0,1))}</span><span class="role-row-copy"><strong>${esc(role.name)}<small>${role.age}岁 · ${esc(labelPresentation[role.presentation]||"未指定")}</small></strong><span>${esc(role.bio)}</span><small>${role.traits.slice(0,2).map(id=>library.traits[id]).filter(Boolean).join(" · ")}</small></span><span class="role-row-arrow" aria-hidden="true">↗</span></button>`).join(""):`<div class="empty-filter"><strong>没搜到这个人</strong><p>换个名字、兴趣词，或者清空搜索。</p><button type="button" data-go="clear-role-search" class="quiet">清空搜索</button></div>`}</div>
+      ${selected?`<aside class="role-profile"><div class="profile-top"><span class="role-initial role-initial-large" aria-hidden="true">${esc(selected.name.slice(0,1))}</span><div><p class="section-eyebrow">角色档案 · ${esc(selected.id)}</p><h2 tabindex="-1">${esc(selected.name)}</h2><p>${selected.age}岁 · ${esc(labelPresentation[selected.presentation]||"未指定")}</p></div></div><p class="profile-bio">${esc(selected.bio)}</p><blockquote class="profile-line">“${esc(selected.greeting)}”</blockquote><div class="profile-facts"><div><span>相处节奏</span><strong>${esc(selectedTraits.join(" · ")||"还没设定")}</strong></div><div><span>会聊到</span><strong>${esc(selectedInterests.join(" · ")||"跟着现场走")}</strong></div><div><span>常见场景</span><strong>${esc(sceneLabels.join(" · ")||"暂未限定")}</strong></div><div><span>适合模式</span><strong>${esc(supportedModes.join(" · "))}</strong></div></div><p class="profile-caveat">这些是模拟设定，不代表真人，也不预测好感或同意。</p><div class="buttons profile-actions">${button("choose-role", "和TA预演", "primary")}${button("role-custom", "改为自己捏人", "quiet")}</div>${button("role-list", "← 返回角色列表", "mobile-list-back")}</aside>`:""}</div>
+      <div class="library-bottom">${button("random-role", "让系统按场景帮我选", "quiet")}${button("home", "回首页", "quiet")}</div>
+    </section>`;
+  }
+
+  function sceneCatalog() {
+    const categories = ["全部",...new Set(library.scenes.map(scene=>scene.category||"见面活动"))];
+    if (!categories.includes(sceneCatalogCategory)) sceneCatalogCategory="全部";
+    const scenes = sceneCatalogCategory==="全部"?library.scenes:library.scenes.filter(scene=>(scene.category||"见面活动")===sceneCatalogCategory);
+    const selected = library.scenes.find(scene=>scene.id===sceneCatalogSelected)||scenes[0]||library.scenes[0];
+    const details = selected ? `<aside class="scene-profile"><p class="section-eyebrow">场景便笺 · ${esc(selected.category||"见面活动")}</p><h2 tabindex="-1">${esc(selected.name)}</h2><p class="scene-profile-desc">${esc(selected.description||selected.intro||"从眼前发生的事开始，不必提前准备完美台词。")}</p><div class="scene-facts"><span>${Number.isFinite(selected.duration)?`模拟${selected.duration}分钟`:"时长待你决定"}</span><span>${Number.isFinite(selected.cost)?`模拟人均${selected.cost}元`:"花费按现场协商"}</span><span>${esc(selected.time||"时间待定")}</span></div><p class="profile-caveat">展示的是练习模板，不是商家信息；营业、预约和真实价格需自行确认。</p><div class="buttons">${button("use-scene", "用这个场景", "primary")}${button("scene-list", "← 选别的场景", "quiet")}</div></aside>`:"";
+    return `<section class="panel scene-catalog ${sceneDetailOpen?"is-detail":""}"><div class="page-intro"><p class="kicker">赴约方式 / 场景目录</p><h1 tabindex="-1">今天想去哪儿？</h1><p class="subline">从24个常见约会活动里挑一个。真实地点、营业情况和价格由你们确认。</p></div><div class="scene-browser"><div class="scene-browser-main"><div class="scene-category-tabs" role="group" aria-label="场景分类">${categories.map(category=>`<button type="button" data-scene-category="${esc(category)}" aria-pressed="${category===sceneCatalogCategory}">${esc(category)}</button>`).join("")}</div><div class="scene-list">${scenes.map(scene=>`<button type="button" data-scene-choice="${esc(scene.id)}" class="scene-list-row" aria-pressed="${selected?.id===scene.id}"><span class="scene-dot" aria-hidden="true"></span><span><strong>${esc(scene.name)}</strong><small>${esc(scene.description||scene.intro||"")}</small></span><span class="scene-row-meta">${Number.isFinite(scene.duration)?`${scene.duration}分钟`:"时长自定"}　↗</span></button>`).join("")}</div></div>${details}</div><div class="library-bottom">${button("roles", "← 回角色库", "quiet")}${button("home", "回首页", "quiet")}</div></section>`;
   }
 
   function journal() {
@@ -156,9 +207,9 @@
   function navigation() {
     const inScene = screen === "live";
     return `<nav class="page-nav" aria-label="网页导航">
-      <span class="brand">Dating之神</span>
-      <div>${inScene ? (run.branchFrom === null ? "约会现场" : "约会重演") :
-        `${button("home", "首页", screen === "cover" ? "nav-current" : "quiet")}${button("journal", "自查簿", screen === "journal" ? "nav-current" : "quiet")}`}</div>
+      <span class="brand"><span class="brand-mark" aria-hidden="true">♡</span>Dating之神</span>
+      <div>${inScene ? `<span class="nav-scene-state">${run.branchFrom === null ? "约会现场" : "约会重演"}</span>` :
+        `${button("home", "首页", screen === "cover" ? "nav-current" : "quiet")}${button("roles", "角色库", screen === "roles" ? "nav-current" : "quiet")}${button("journal", "自查簿", screen === "journal" ? "nav-current" : "quiet")}${screen !== "cover" ? button("back", "← 返回", "nav-back") : ""}`}</div>
     </nav>`;
   }
 
@@ -227,9 +278,10 @@
   }
 
   function settings() {
+    const chosen = library.roles.find(role=>role.id===preferredRoleId);
     return `<section class="panel">
-      ${heading("", "这次约在哪里？", "选一个想练的场景。卡片上的时间和花费都是模拟安排。")}
-      ${quickEntry ? `<div class="quick-tools">${check("adult", "我已年满18岁", config.adult)}${button("preferences", "调整对象偏好", "quiet")}</div>` : ""}
+      ${heading("赴约前 / 02", "把这一场安排好", "选一个活动，再决定想练的关系节奏。地点与花费都按模拟模板展示。")}
+      ${quickEntry ? `<div class="quick-tools"><div class="chosen-person">${chosen?`<span class="chosen-person-mark" aria-hidden="true">${esc(chosen.name.slice(0,1))}</span><span><small>本场对象</small><strong>${esc(chosen.name)} · ${chosen.age}岁</strong></span>`:`<span><small>本场对象</small><strong>从符合条件的人物中挑选</strong></span>`}${button("roles", chosen?"换一个人":"看看角色", "quiet")}</div>${check("adult", "我已年满18岁", config.adult)}${button("preferences", "更多偏好", "quiet")}</div>` : ""}
       <div class="form-grid">
         ${scenePicker()}
         <label class="field"><span>我希望这场约会……（私人便笺，不发送给角色）</span><textarea name="expectation" maxlength="320" placeholder="例如，我想试试说出自己真正喜欢的地点。">${esc(config.expectation)}</textarea></label>
@@ -240,24 +292,23 @@
           ${check("guidance", "开场时给我一个可见的方向", config.guidance)}
         </div></fieldset>
       </div>
-      <div class="buttons">${button("match", quickEntry ? "去选角色" : "看看见面便笺", "primary")}${button(quickEntry ? "home" : "preferences", "上一步", "quiet")}</div>
+      <div class="buttons settings-actions">${button("match", quickEntry ? "继续：确认对象" : "看看见面便笺", "primary")}${button("role-custom", "改为自己捏人", "quiet")}${button(quickEntry ? "roles" : "preferences", "上一步", "quiet")}</div>
     </section>`;
   }
 
   function invitation() {
     const role = candidates[candidateIndex];
     if (!role) return `<section class="panel">
-      ${heading("赴约前 / 03", "这次的组合还没有覆盖", "当前地点与对象条件没有对应人选。你可以换地点，或回到偏好调整条件。")}
-      <div class="buttons">${button("settings", "换地点", "primary")}${button("preferences", "调整偏好")}${button("reset", "结束", "quiet")}</div>
+      ${heading("赴约前 / 03", preferredRoleId?"这个组合还不合适":"暂时没有匹配的人", preferredRoleId?"这个角色与当前场景、对象视角或本场条件不兼容。保留角色选择，先调整其中一项。":"当前的场景、视角与条件没有合适人选。可以换一个条件，或让系统重新匹配。")}
+      <div class="buttons">${button("settings", "换场景或条件", "primary")}${button("roles", "换一个角色")}${button("random-role", "让系统重新匹配")}${button("reset", "回首页", "quiet")}</div>
     </section>`;
     const identity = config.presentation === "unspecified" ? `${role.age} 岁` : `${role.age} 岁 · ${display[role.presentation]}`;
     return `<section class="panel">
       ${heading("", quickEntry ? "这次想和谁见面？" : "一张见面便笺")}
-      ${quickEntry ? `<label class="field role-picker"><span>角色库</span><select name="role-choice">${candidates.map((item,index) => option(String(index), esc(item.name), String(candidateIndex))).join("")}</select></label>` : ""}
-      <article class="ticket"><p class="meta">${engine.sceneById(config.scene).name} · ${identity}</p><h2>${role.name}</h2>
-      ${config.avoid.includes("work") ? "" : `<p>${role.bio}</p><hr class="ticket-rule">`}<p>${role.reason}</p></article>
-      <div class="buttons">${button("meet", "按约见面", "primary")}
-      ${candidates.length > 1 ? button("swap", "换一位") : ""}${button("settings", "回到设置", "quiet")}</div>
+      <article class="meet-card"><p class="section-eyebrow">一张见面便笺 · ${esc(engine.sceneById(config.scene).name)}</p><h2>${esc(role.name)}</h2><p class="meet-identity">${identity} · ${esc(role.goal||"想看看彼此聊不聊得来")}</p>
+      ${config.avoid.includes("work") ? "" : `<p>${esc(role.bio)}</p>`}<blockquote>“${esc(role.greeting)}”</blockquote><p>${esc(role.reason)}</p></article>
+      <div class="buttons">${button("meet", "开始这场约会", "primary")}
+      ${candidates.length > 1 ? button("swap", "换一位") : ""}${button("settings", "再改改安排", "quiet")}</div>
     </section>`;
   }
 
@@ -373,8 +424,14 @@
     const adultField = `<fieldset class="adult-gate"><legend>开始前确认</legend>${check("adult", "我已年满18岁", config.adult)}</fieldset>`;
     return window.DatingPreparation.render(preparation, library, {budgetFields, adultField, currentScene:config.scene});
   }
-  const views = { preparation:preparationView, cover, journal, preferences, settings, invitation, live, review, final, practiceReview };
-  function show(next, message = "", focus = true) {
+  const views = { preparation:preparationView, cover, roles:roleLibrary, sceneCatalog, journal, preferences, settings, invitation, live, review, final, practiceReview };
+  function show(next, message = "", focus = true, route = {}) {
+    if (window.history && !route.fromHistory) {
+      const state = {datingGod:true, screen:next};
+      const url = `#${next}`;
+      if (route.replace || !screen) window.history.replaceState(state, "", url);
+      else if (next !== screen) window.history.pushState(state, "", url);
+    }
     screen = next;
     app.innerHTML = navigation() + views[next]();
     if (modelMode && next === "live") {
@@ -391,6 +448,17 @@
     refreshCardPreview();
     if (focus) app.querySelector("h1")?.focus({preventScroll:false});
   }
+
+  window.addEventListener?.("popstate", event => {
+    const next = event.state?.datingGod ? event.state.screen : null;
+    if (!next || !views[next]) return;
+    if (screen === "live" && next !== "live") {
+      window.history?.pushState({datingGod:true,screen}, "", `#${screen}`);
+      status.textContent = "这场还在进行。先在现场暂停或结束，再返回其他页面。";
+      return;
+    }
+    show(next, "", true, {fromHistory:true});
+  });
 
   function refreshCardPreview() {
     if (cardPreviewUrl) URL.revokeObjectURL(cardPreviewUrl);
@@ -456,6 +524,15 @@
 
   app.addEventListener("input", (event) => {
     const { name, value, checked, type } = event.target;
+    if (name === "role-search") {
+      roleSearch=value;
+      const query=value.trim().toLocaleLowerCase();
+      const matches=library.roles.filter(role=>!query||[role.name,role.bio,role.reason,...role.interests.map(id=>library.interests[id]||id),...role.traits.map(id=>library.traits[id]||id)].join(" ").toLocaleLowerCase().includes(query));
+      if(!matches.some(role=>role.id===selectedRoleId)){selectedRoleId=matches[0]?.id||null;roleDetailOpen=false;}
+      show("roles", "", false);
+      const input=app.querySelector('[name="role-search"]');input?.focus();input?.setSelectionRange?.(value.length,value.length);
+      return;
+    }
     if (name === "role-choice" && candidates[Number(value)]) {
       candidateIndex = Number(value);
       show("invitation", "", false);
@@ -523,8 +600,25 @@
     if (event.target.closest("button")?.dataset.radar) return radar.handle(event);
     const target = event.target.closest("button");
     if (!target) return;
-    const { go, action, turn, select, scene } = target.dataset;
+    const { go, action, turn, select, scene, role, sceneChoice, sceneCategory, homeScene } = target.dataset;
     if (busy && screen !== "live" && go !== "reset") return;
+    if (role) {
+      if(!library.roles.some(item=>item.id===role))return;
+      selectedRoleId=role;roleDetailOpen=true;show("roles", "", false);
+      app.querySelector(".role-profile h2")?.focus({preventScroll:false});
+      return;
+    }
+    if (sceneCategory) {
+      sceneCatalogCategory=sceneCategory;sceneDetailOpen=false;show("sceneCatalog", "", false);return;
+    }
+    if (sceneChoice) {
+      if(!library.scenes.some(item=>item.id===sceneChoice))return;
+      sceneCatalogSelected=sceneChoice;sceneDetailOpen=true;show("sceneCatalog", "", false);app.querySelector(".scene-profile h2")?.focus({preventScroll:false});return;
+    }
+    if (homeScene) {
+      if(!library.scenes.some(item=>item.id===homeScene))return;
+      config.scene=homeScene;preferredRoleId=null;quickEntry=true;show("roles");return;
+    }
     if (scene) {
       if (!library.scenes.some(item=>item.id===scene)) return;
       config.scene = scene;
@@ -589,6 +683,42 @@
       case "home":
         if (screen !== "live" && !busy) show("cover");
         break;
+      case "roles":
+        if (screen !== "live" && !busy) show("roles");
+        break;
+      case "all-scenes":
+        if (screen !== "live" && !busy) { sceneCatalogSelected=config.scene||recommendedScene.id;sceneDetailOpen=false;show("sceneCatalog"); }
+        break;
+      case "use-scene":
+        config.scene=sceneCatalogSelected||recommendedScene.id;preferredRoleId=null;quickEntry=true;modelMode=false;show("roles");
+        break;
+      case "choose-role": {
+        const role=library.roles.find(item=>item.id===selectedRoleId);
+        if(!role){status.textContent="先从列表里选一位角色。";break;}
+        preferredRoleId=role.id;config.presentation=role.presentation;
+        const adjusted=role.modes?.length&&!role.modes.includes(config.mode);
+        if(adjusted)config.mode=role.modes[0];
+        quickEntry=true;modelMode=false;show("settings", adjusted?`${role.name}更适合「${modes[config.mode]}」，已为本场调整；可从更多偏好里改回来。`:"");
+        break;
+      }
+      case "role-list":
+        roleDetailOpen=false;show("roles", "", false);app.querySelector('[data-role="'+selectedRoleId+'"]')?.focus();
+        break;
+      case "scene-list":
+        sceneDetailOpen=false;show("sceneCatalog", "", false);app.querySelector('[data-scene-choice="'+sceneCatalogSelected+'"]')?.focus();
+        break;
+      case "clear-role-search":
+        roleSearch="";selectedRoleId=library.roles[0]?.id||null;roleDetailOpen=false;show("roles", "", false);app.querySelector('[name="role-search"]')?.focus();
+        break;
+      case "random-role":
+        preferredRoleId=null;config.presentation="unspecified";quickEntry=true;modelMode=false;show("settings");
+        break;
+      case "role-custom":
+        preferredRoleId=null;directPreparation=true;preparation.source="custom";if(preparation.step===0)preparation.step=1;show("preparation");
+        break;
+      case "back":
+        if(window.history?.state?.datingGod&&typeof window.history.back==="function")window.history.back();else show("cover");
+        break;
       case "journal":
         if (screen !== "live" && !busy) show("journal");
         break;
@@ -599,13 +729,14 @@
         break;
       case "use-recommendation":
         config.scene = recommendedScene.id;
-        // The recommendation only preselects a scene. Nothing starts here.
-        quickEntry = true; modelMode = false; show("settings");
+        preferredRoleId=null;sceneCatalogSelected=recommendedScene.id;
+        quickEntry = true; modelMode = false; show("roles");
         break;
       case "quick":
-        quickEntry = true; modelMode = false; show("settings");
+        quickEntry = true; modelMode = false;show("roles");
         break;
       case "custom-entry":
+        preferredRoleId=null;
         directPreparation = true;
         if (preparation.step === 0) preparation.step = 1;
         show("preparation");
@@ -644,7 +775,8 @@
       case "settings": if (checkAdult()) show("settings"); break;
       case "blind": {
         if (!checkAdult() || !checkPlan()) break;
-        const eligible = engine.match(config);
+        let eligible = engine.match(config);
+        if(preferredRoleId)eligible=eligible.filter(role=>role.id===preferredRoleId);
         if (eligible.length) {
           if (quickEntry) modelMode = await detectModel();
           if (screen !== "preferences") break;
@@ -656,6 +788,7 @@
       case "match":
         if (!checkAdult() || !checkPlan()) break;
         candidates = engine.match(config);
+        if(preferredRoleId)candidates=candidates.filter(role=>role.id===preferredRoleId);
         candidateIndex = 0;
         show("invitation");
         break;

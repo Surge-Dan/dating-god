@@ -8,6 +8,16 @@ const test = require("node:test");
 // Exercise the page's real handlers without launching a browser.
 function openPage(overrides = {}) {
   const events = {};
+  const browserEvents = {};
+  const historyEntries=[];
+  let historyIndex=-1;
+  const history={
+    state:null,
+    pushState(state,_title,url){historyEntries.splice(historyIndex+1);historyEntries.push({state,url});historyIndex++;this.state=state;},
+    replaceState(state,_title,url){if(historyIndex<0){historyEntries.push({state,url});historyIndex=0;}else historyEntries[historyIndex]={state,url};this.state=state;},
+    back(){if(historyIndex>0){historyIndex--;this.state=historyEntries[historyIndex].state;browserEvents.popstate?.({state:this.state});}},
+    forward(){if(historyIndex<historyEntries.length-1){historyIndex++;this.state=historyEntries[historyIndex].state;browserEvents.popstate?.({state:this.state});}},
+  };
   const files = new Map();
   const downloads = [];
   let focusCount=0;
@@ -32,14 +42,14 @@ function openPage(overrides = {}) {
     createObjectURL: (blob) => { const key = `blob:${++sequence}`; files.set(key, blob); return key; },
     revokeObjectURL: (key) => files.delete(key),
   };
-  const context = { window: {}, document, crypto: webcrypto, URL, Blob, setTimeout: () => {}, ...overrides };
+  const context = { ...overrides, window: {history,addEventListener:(name,handler)=>{browserEvents[name]=handler;},...(overrides.window||{})}, document, crypto: webcrypto, URL, Blob, setTimeout: () => {} };
   const dir = resolve(__dirname, "../dating-god/assets");
   const index = readFileSync(resolve(dir, "index.html"), "utf8");
   for (const [, script] of index.matchAll(/<script defer src="([^"]+)"/g)) {
     runInNewContext(readFileSync(resolve(dir, script), "utf8"), context, { filename: script });
   }
   return {
-    view, status, downloads, radarHost, focusCount:()=>focusCount, element:(id,value)=>extraElements.set(id,{value}),
+    view, status, downloads, radarHost, historyEntries, focusCount:()=>focusCount, element:(id,value)=>extraElements.set(id,{value}), back:()=>history.back(),forward:()=>history.forward(),
     preview: () => files.get(art.src),
     click: (dataset) => events.click({ target: { closest: () => ({ dataset }) } }),
     input: (name, value) => events.input({ target: {
@@ -88,22 +98,79 @@ test("page gates blind dates, renders a replay, and downloads exactly what it pr
 test("recommended scene is replaceable before opening and the role library starts the selected scene", async () => {
   const page = openPage();
   const go = id => page.click({go:id});
-  assert.match(page.view.innerHTML, /直接用角色库/);
-  assert.match(page.view.innerHTML, /先捏一个对象/);
-  const first = page.view.innerHTML.match(/<h2>([^<]+)<\/h2>/)[1];
+  assert.match(page.view.innerHTML, /先赴一场像真的约会/);
+  assert.match(page.view.innerHTML, /按你的印象捏一个人/);
+  assert.match(page.view.innerHTML, /practice-slip/);
+  const first = page.view.innerHTML.match(/data-scene-name="([^"]+)"/)[1];
   await go("reroll");
-  assert.notEqual(page.view.innerHTML.match(/<h2>([^<]+)<\/h2>/)[1], first);
+  assert.notEqual(page.view.innerHTML.match(/data-scene-name="([^"]+)"/)[1], first);
   await go("use-recommendation");
-  assert.match(page.view.innerHTML, /这次约在哪里/);
-  await page.click({scene:"A08"});
+  assert.match(page.view.innerHTML, /角色库/);
+  go("all-scenes");
+  assert.match(page.view.innerHTML, /电影院/);
+  page.click({sceneChoice:"S02"});
+  assert.match(page.view.innerHTML, /咖啡／茶饮/);
+  go("use-scene");
+  assert.match(page.view.innerHTML, /角色库/);
+  await page.click({role:"R01"});
+  assert.match(page.view.innerHTML, /林澈/);
+  await go("choose-role");
+  assert.match(page.view.innerHTML, /把这一场安排好/);
+  assert.match(page.view.innerHTML, /林澈/);
   await go("match");
   assert.match(page.status.textContent, /年满 18 岁/);
   page.input("adult", true);
   await go("match");
-  assert.match(page.view.innerHTML, /角色库/);
+  assert.match(page.view.innerHTML, /林澈/);
   await go("meet");
-  assert.match(page.view.innerHTML, /公园公共东门/);
+  assert.match(page.view.innerHTML, /林澈 · 书店咖啡门口/);
   assert.doesNotMatch(page.view.innerHTML, /name="utterance"/);
+});
+
+test("scene catalog and journal use task-specific navigation and immediate practice filters", async () => {
+  const page = openPage();
+  const go = id => page.click({go:id});
+  go("all-scenes");
+  assert.match(page.view.innerHTML, /scene-catalog/);
+  assert.match(page.view.innerHTML, /电影院/);
+  page.click({sceneChoice:"A08"});
+  assert.match(page.view.innerHTML, /公园散步/);
+  go("use-scene");
+  assert.match(page.view.innerHTML, /角色库/);
+  go("journal");
+  assert.match(page.radarHost.innerHTML, /data-radar="journal-tab"/);
+  assert.match(page.radarHost.innerHTML, /data-radar="practice-group-select"/);
+  page.click({radar:"journal-tab",id:"records"});
+  assert.match(page.radarHost.innerHTML, /我的记录/);
+  assert.match(page.radarHost.innerHTML, /还没有保存的约会记录/);
+});
+
+test("journal deletion shows its scope and can be cancelled before removing records", async () => {
+  const page = openPage();
+  await page.click({go:"journal"});
+  await new Promise(resolve=>setImmediate(resolve));
+  page.click({radar:"clear"});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.match(page.radarHost.innerHTML, /role="alertdialog"/);
+  assert.match(page.radarHost.innerHTML, /约会对话与报告文件不会被删除/);
+  page.click({radar:"cancel-removal"});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.doesNotMatch(page.radarHost.innerHTML, /journal-confirm-overlay/);
+});
+
+test("browser back and forward restore the page without putting private setup data in the URL", () => {
+  const page=openPage();
+  page.click({go:"quick"});
+  page.click({role:"R01"});
+  page.click({go:"choose-role"});
+  page.input("nickname","小棠");
+  assert.match(page.view.innerHTML,/把这一场安排好/);
+  page.back();
+  assert.match(page.view.innerHTML,/role-library/);
+  assert.match(page.view.innerHTML,/林澈/);
+  assert.doesNotMatch(JSON.stringify(page.historyEntries),/小棠|林澈|预算/);
+  page.forward();
+  assert.match(page.view.innerHTML,/把这一场安排好/);
 });
 
 
@@ -240,7 +307,7 @@ test("offline blocked photo produces a private short card and honors immersion t
 });
 test("home groups practice rules and completes exactly three independent rounds",async()=>{
  const page=openPage();await page.click({go:"journal"});await new Promise(resolve=>setImmediate(resolve));
- assert.match(page.radarHost.innerHTML,/还没有保存的记录/);assert.match(page.radarHost.innerHTML,/radar-practice-group/);
+ assert.match(page.radarHost.innerHTML,/分支情景/);assert.match(page.radarHost.innerHTML,/data-radar="practice-group-select"/);
  page.element("radar-practice-rule","D04-01");await page.click({radar:"practice-chosen",id:""});
  assert.match(page.radarHost.innerHTML,/独立微练习/);
  for(let i=0;i<3;i++){await page.click({radar:"practice-action",id:String(i)});assert.match(page.radarHost.innerHTML,/TA：/);}
@@ -284,7 +351,7 @@ test('preparation entry advances through assumptions and confirmation without re
 
 test('custom and randomized locked partners enter real perler and tennis scenes and finish',async()=>{for(const template of ['perler','tennis']){const page=openPage();const go=id=>page.click({go:id});await go('prepare');page.input('prep.brief','练习共同活动');await go('prep-next');page.input('partner.appearance.hairLength','long');page.input('lock.appearance.hairLength',true);page.input('partner.interaction.expression','reserved');await go('prep-random');assert.match(page.view.innerHTML,/<option value="long" selected>/);page.input('partner.interaction.expression','outgoing');await go('prep-next');page.input('prep.template',template);page.input('prep.place','周末活动店');await go('prep-next');page.input('adult',true);await go('prep-offline');assert.equal(page.status.textContent,'');assert.match(page.view.innerHTML,/暂停/);assert.match(page.view.innerHTML,/周末活动店/);await go('end');assert.match(page.view.innerHTML,/回看|散场|带走/);}});
 
-test('preparation config persists without conversation and can be deleted independently',async()=>{const stored=new Map();const page=openPage({window:{localStorage:{setItem:(k,v)=>stored.set(k,v),getItem:k=>stored.get(k),removeItem:k=>stored.delete(k)}}});await page.click({go:'prepare'});page.input('prep.brief','周末准备');await page.click({go:'prep-save'});const raw=[...stored.values()][0];assert.match(raw,/周末准备/);assert.ok(!/events|transcript|messages/.test(raw));await page.click({go:'prep-exit'});assert.match(page.view.innerHTML,/先捏一个对象/);await page.click({go:'prepare'});await page.click({go:'prep-delete'});assert.equal(stored.size,0);});
+test('preparation config persists without conversation and can be deleted independently',async()=>{const stored=new Map();const page=openPage({window:{localStorage:{setItem:(k,v)=>stored.set(k,v),getItem:k=>stored.get(k),removeItem:k=>stored.delete(k)}}});await page.click({go:'prepare'});page.input('prep.brief','周末准备');await page.click({go:'prep-save'});const raw=[...stored.values()][0];assert.match(raw,/周末准备/);assert.ok(!/events|transcript|messages/.test(raw));await page.click({go:'prep-exit'});assert.match(page.view.innerHTML,/按你的印象捏一个人/);await page.click({go:'prepare'});await page.click({go:'prep-delete'});assert.equal(stored.size,0);});
 
 test('existing role presets stay within preparation confirmation and reach the date',async()=>{const page=openPage();const go=id=>page.click({go:id});await go('prepare');await go('prep-next');await go('prep-existing');assert.match(page.view.innerHTML,/现成人物预设/);await go('prep-next');await go('prep-next');assert.match(page.view.innerHTML,/本次预演卡/);page.input('adult',true);await go('prep-offline');assert.equal(page.status.textContent,'');assert.match(page.view.innerHTML,/暂停/);await go('end');page.input('review-prep.claimedAction','先问对方有没有兴趣');await go('final');assert.match(page.view.innerHTML,/赴约准备|这场/);});
 
