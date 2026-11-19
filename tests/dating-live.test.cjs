@@ -378,12 +378,14 @@ test('model role facts exclude legacy scene scripts and do not turn stage into i
  assert.equal(trusted.role.story,undefined);assert.equal(trusted.role.greeting,undefined);assert.equal(trusted.role.next,undefined);assert.equal(trusted.role.proposal,undefined);assert.equal(trusted.role.name,'林澈');assert.match(prompt,/不.*捏造|不.*旧回忆/);
 });
 
-test('HTTP-served catalogue loads all 24 activities and 32 roles in browser script order', async t => {
+test('HTTP-served catalogue loads activities, roles, and practice scenarios in browser script order', async t => {
  const f=await fixture(t);const html=await (await fetch(f.app.url+'/')).text();const scripts=[...html.matchAll(/<script defer src="([^"]+)"/g)].map(x=>x[1]);
  assert.ok(scripts.indexOf('expanded-content.js')>=0);assert.ok(scripts.indexOf('expanded-content.js')<scripts.indexOf('content.js'));
+ assert.ok(scripts.indexOf('practice-scenarios.js')>scripts.indexOf('radar-store.js'));assert.ok(scripts.indexOf('practice-scenarios.js')<scripts.indexOf('radar-ui.js'));
  const sandbox={window:{}};const vm=require('node:vm');vm.createContext(sandbox);
- for(const name of scripts.filter(x=>['expanded-content.js','content.js'].includes(x))){const r=await fetch(f.app.url+'/'+name);assert.equal(r.status,200);vm.runInContext(await r.text(),sandbox,{filename:name});}
+ for(const name of scripts.filter(x=>['expanded-content.js','content.js','practice-scenarios.js'].includes(x))){const r=await fetch(f.app.url+'/'+name);assert.equal(r.status,200);vm.runInContext(await r.text(),sandbox,{filename:name});}
  assert.equal(sandbox.window.DatingContent.scenes.length,24);assert.equal(sandbox.window.DatingContent.roles.length,32);
+ assert.ok(sandbox.window.DatingPracticeScenarios.get('natural-close-v1'));
 });
 
 test('movie and activity free conversation use their actual scene pacing', async t => {

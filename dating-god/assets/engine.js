@@ -14,6 +14,12 @@
     const partner=partnerModule().build(config.partnerSpec);
     return { id:partner.id, name:partner.name||'预演对象', age:partner.age||25,presentation:partner.presentation||'unspecified',pronoun:'TA',players:presentations,scenes:[scene.id,...scenes.map(x=>x.id)],traits:[],interests:[],bio:'基于用户提供的有限印象进行模拟，不预测真人。',reason:'按本场对象假设预演',goal:'先了解彼此，具体安排共同确认',limit:Math.min(config.timeBudget||90,partner.conditions.remainingMinutes??Infinity),obligation:'处理自己的安排',greeting:'我们先从眼前这件事聊起吧。',story:'你想先从哪件具体的事说起？',listen:'我听着，你可以接着说。',quiet:'可以先安静一会儿。',joke:'这个我听懂了。',turnDown:'今天先不延长了。',stayStyle:'leave',nextStyle:'clarify',next:'另行确认的时间地点',proposal:'时间和地点我们再具体商量。',bye:'今天先到这里，路上小心。',partner };
   }
+  function roleFits(role,config,activitySceneId) {
+    return role.age>=18 && role.scenes.includes(activitySceneId) && role.players.includes(config.player) &&
+      (!config.mode || !role.modes || role.modes.includes(config.mode)) &&
+      (config.player!=='man'||role.presentation==='woman') && (config.player!=='woman'||role.presentation==='man') &&
+      (['any','unspecified'].includes(config.presentation)||role.presentation===config.presentation);
+  }
   function canVisit(run, target) {
     const role=resolveRole(run);
     if(run.partnerSnapshot && target) {
@@ -41,22 +47,19 @@
     if (!scene) return [];
     if (Number.isFinite(config.budget) && (scene.cost || 0) > config.budget) return [];
     if (Number.isFinite(config.timeBudget) && (scene.duration || 0) > config.timeBudget) return [];
+    const activitySceneId=config.sceneSpec?sceneModule().compatibilitySceneId(config.sceneSpec.template):scene.id;
+    if(!activitySceneId)return [];
     const custom=runtimeRole(config,scene);
-    if(custom) return (scene.cost||0)>(custom.partner.conditions.budget??Infinity)||(scene.duration||0)>(custom.partner.conditions.remainingMinutes??Infinity)?[]:[custom];
-    if(config.sceneSpec) return roles.filter(role=>role.age>=18 && (["any","unspecified"].includes(config.presentation)||role.presentation===config.presentation)).map(role=>({...role,scenes:[...role.scenes,scene.id]}));
+    if(custom) return (scene.cost||0)>(custom.partner.conditions.budget??Infinity)||(scene.duration||0)>(custom.partner.conditions.remainingMinutes??Infinity)||!roleFits(custom,config,activitySceneId)?[]:[custom];
     const preferences = [...new Set(config.traits || [])].filter((key) => Object.hasOwn(traits, key)).slice(0, 3);
     const seed = config.seed >>> 0;
     const score = (role) =>
       (role.traits.includes(preferences[0]) ? 8 : 0) +
       preferences.slice(1).filter((preference) => role.traits.includes(preference)).length * 2 +
       (Object.hasOwn(interests, config.interest) && role.interests.includes(config.interest) ? 1 : 0);
-    return roles.filter((role) =>
-      role.age >= 18 && role.scenes.includes(scene.id) && role.players.includes(config.player) &&
-      (!config.mode || !role.modes || role.modes.includes(config.mode)) &&
-      (config.player !== "man" || role.presentation === "woman") &&
-      (config.player !== "woman" || role.presentation === "man") &&
-      (["any", "unspecified"].includes(config.presentation) || role.presentation === config.presentation)
-    ).sort((a, b) => score(b) - score(a) || mix(seed, a.id) - mix(seed, b.id));
+    return roles.filter(role=>roleFits(role,config,activitySceneId))
+      .sort((a,b)=>score(b)-score(a)||mix(seed,a.id)-mix(seed,b.id))
+      .map(role=>role.scenes.includes(scene.id)?role:{...role,scenes:[...role.scenes,scene.id]});
   }
 
   function opening(run) {

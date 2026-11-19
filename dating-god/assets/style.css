@@ -158,6 +158,7 @@ footer { display: flex; flex-wrap: wrap; gap: .25rem 1.2rem; justify-content: sp
 .live-panel .control { margin-bottom: 1rem; }
 .live-panel textarea { min-height: 4rem; }
 .radar-panel, .report-panel .ticket { overflow-wrap: anywhere; }
+.radar-feature-practice{margin:16px 0;padding:18px 20px;border:1px solid var(--line);border-left:4px solid var(--rose);background:linear-gradient(115deg,var(--white),#fff8f4)}.radar-feature-practice h3,.radar-scenario-practice h3{margin:.25rem 0 .65rem}.radar-feature-practice p,.radar-scenario-practice p{line-height:1.7}.scenario-transcript{margin:16px 0;padding:10px 14px;border-left:2px solid var(--line);background:var(--paper-light)}.scenario-prompt{margin:18px 0;padding:14px 16px;border:1px solid var(--line);background:var(--white)}.scenario-outcome,.scenario-review{padding:10px 12px;background:#fff4f1;color:var(--wine)}.radar-scenario-practice>[data-radar="practice-choice"]{display:block;width:100%;margin:8px 0;text-align:left;line-height:1.55;min-height:44px}
 @media (max-width: 680px) {
   .entry-grid, .field-row, .partner-layout { grid-template-columns: minmax(0,1fr); }
   .entry-choice { min-height: 5rem; }

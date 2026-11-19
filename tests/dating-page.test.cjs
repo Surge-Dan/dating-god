@@ -248,6 +248,38 @@ test("home groups practice rules and completes exactly three independent rounds"
  await page.click({radar:"practice-close",id:""});assert.doesNotMatch(page.radarHost.innerHTML,/radar-practice-text/);
 });
 
+test('journal starts a consequential natural-ending scenario and supports replay',async()=>{
+ const page=openPage();await page.click({go:'journal'});await new Promise(resolve=>setImmediate(resolve));
+ assert.match(page.radarHost.innerHTML,/自然收尾/);
+ await page.click({radar:'practice-scenario',id:'natural-close-v1'});
+ assert.match(page.radarHost.innerHTML,/十分钟后/);
+ await page.click({radar:'practice-choice',id:'pressure'});
+ assert.match(page.radarHost.innerHTML,/今天真得走/);
+ assert.match(page.radarHost.innerHTML,/修复机会/);
+ await page.click({radar:'practice-choice',id:'repair'});
+ assert.match(page.radarHost.innerHTML,/这条路径练到/);
+ assert.equal((page.radarHost.innerHTML.match(/这一步的结果/g)||[]).length,0);
+ assert.match(page.radarHost.innerHTML,/换个选择重来/);
+ await page.click({radar:'practice-restart',id:''});
+ assert.match(page.radarHost.innerHTML,/十分钟后/);
+});
+
+test('scenario practice remains available until the user enables local saving',async()=>{
+ const page=openPage();await page.click({go:'journal'});await new Promise(resolve=>setImmediate(resolve));
+ await page.click({radar:'practice-scenario',id:'natural-close-v1'});
+ await page.click({radar:'practice-choice',id:'accept'});
+ await page.click({radar:'practice-choice',id:'close-warmly'});
+ await page.click({radar:'practice-save',id:''});
+ assert.match(page.radarHost.innerHTML,/尚未开启本机跨场保存/);
+ assert.match(page.radarHost.innerHTML,/这条路径练到/);
+ await page.click({radar:'consent',id:''});
+ await page.click({radar:'practice-save',id:''});
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.match(page.radarHost.innerHTML,/到点了，怎么自然收尾/);
+ await page.click({radar:'practice',id:'scenario:natural-close-v1'});
+ assert.match(page.radarHost.innerHTML,/十分钟后/);
+});
+
 test('preparation entry advances through assumptions and confirmation without removing original experience',()=>{const page=openPage();page.click({go:'prepare'});assert.match(page.view.innerHTML,/准备重点/);page.input('prep.brief','周末第一次见面');page.click({go:'prep-next'});assert.match(page.view.innerHTML,/锁定/);page.click({go:'prep-next'});assert.match(page.view.innerHTML,/活动模板/);page.click({go:'prep-next'});assert.match(page.view.innerHTML,/本次预演卡/);assert.match(page.view.innerHTML,/周末第一次见面/);page.input('adult',true);page.click({go:'prep-offline'});assert.equal(page.status.textContent,'');assert.match(page.view.innerHTML,/暂停/);});
 
 test('custom and randomized locked partners enter real perler and tennis scenes and finish',async()=>{for(const template of ['perler','tennis']){const page=openPage();const go=id=>page.click({go:id});await go('prepare');page.input('prep.brief','练习共同活动');await go('prep-next');page.input('partner.appearance.hairLength','long');page.input('lock.appearance.hairLength',true);page.input('partner.interaction.expression','reserved');await go('prep-random');assert.match(page.view.innerHTML,/<option value="long" selected>/);page.input('partner.interaction.expression','outgoing');await go('prep-next');page.input('prep.template',template);page.input('prep.place','周末活动店');await go('prep-next');page.input('adult',true);await go('prep-offline');assert.equal(page.status.textContent,'');assert.match(page.view.innerHTML,/暂停/);assert.match(page.view.innerHTML,/周末活动店/);await go('end');assert.match(page.view.innerHTML,/回看|散场|带走/);}});
