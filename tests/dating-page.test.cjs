@@ -90,6 +90,8 @@ test("page gates blind dates, renders a replay, and downloads exactly what it pr
   assert.equal(await page.downloads[0].data.text(), preview);
   assert.match(await page.downloads[1].data.text(), /实际重演/);
   go("reset");
+  assert.match(page.view.innerHTML,/散场之后/);
+  await go("confirm-reset");
   go("start");
   go("blind");
   assert.match(page.status.textContent, /年满 18 岁/);
@@ -101,11 +103,26 @@ test("recommended scene is replaceable before opening and the role library start
   assert.match(page.view.innerHTML, /先模拟一场约会/);
   assert.match(page.view.innerHTML, /自己捏人/);
   assert.match(page.view.innerHTML, /practice-slip/);
-  const first = page.view.innerHTML.match(/data-scene-name="([^"]+)"/)[1];
-  await go("reroll");
-  assert.notEqual(page.view.innerHTML.match(/data-scene-name="([^"]+)"/)[1], first);
-  await go("use-recommendation");
-  assert.match(page.view.innerHTML, /角色库/);
+  const group=()=>[...page.view.innerHTML.matchAll(/data-home-scene="([^"]+)"/g)].map(match=>match[1]);
+  let previous=group();
+  for(let i=0;i<10;i++){
+    await go("reroll");
+    const next=group();
+    assert.equal(next.length,4);
+    assert.equal(new Set(next).size,4);
+    assert.ok(next.filter(id=>!previous.includes(id)).length>=3);
+    previous=next;
+  }
+  await page.click({homeCategory:"吃喝"});
+  const food=group();
+  const content=require("../dating-god/assets/content.js");
+  assert.ok(food.every(id=>content.scenes.find(scene=>scene.id===id).category==="吃喝"));
+  await page.click({homeScene:food[0]});
+  assert.match(page.view.innerHTML,/已带入首页选择/);
+  await go("use-scene");
+  assert.match(page.view.innerHTML,/已选场景/);
+  await go("home");
+  assert.deepEqual(group(),food);
   go("all-scenes");
   assert.match(page.view.innerHTML, /电影院/);
   page.click({sceneChoice:"S02"});
@@ -135,8 +152,17 @@ test("scene catalog and journal use task-specific navigation and immediate pract
   go("all-scenes");
   assert.match(page.view.innerHTML, /scene-catalog/);
   assert.match(page.view.innerHTML, /电影院/);
+  assert.doesNotMatch(page.view.innerHTML,/data-scene-choice="[^"]+" aria-pressed="true"/);
+  assert.match(page.view.innerHTML,/data-go="use-scene"[^>]+disabled/);
+  go("use-scene");
+  assert.match(page.view.innerHTML,/scene-catalog/);
   page.click({sceneChoice:"A08"});
   assert.match(page.view.innerHTML, /公园散步/);
+  page.click({sceneCategory:"吃喝"});
+  assert.doesNotMatch(page.view.innerHTML,/data-scene-choice="A08"/);
+  assert.match(page.view.innerHTML,/在当前分类外/);
+  page.click({sceneCategory:"户外"});
+  assert.match(page.view.innerHTML,/data-scene-choice="A08" aria-pressed="true"/);
   go("use-scene");
   assert.match(page.view.innerHTML, /角色库/);
   go("journal");
@@ -173,7 +199,7 @@ test("incompatible role stays in the scene step and can choose a compatible acti
   assert.match(page.view.innerHTML,/plan-warning/);
   assert.match(page.view.innerHTML,/林澈的档案不兼容/);
   await go("compatible-scenes");
-  assert.doesNotMatch(page.view.innerHTML,/plan-warning/);
+  assert.doesNotMatch(page.view.innerHTML,/class="plan-warning"/);
   assert.match(page.view.innerHTML,/林澈/);
   await go("confirm-preferences");
   page.input("adult",true);
@@ -196,6 +222,40 @@ test("home starts the short practice directly and builder steps restore through 
   page.forward();
   assert.match(page.view.innerHTML,/data-custom-scene="tennis"/);
   assert.doesNotMatch(JSON.stringify(page.historyEntries),/小棠/);
+});
+
+test("role filters do not pick the first result and pausing from navigation preserves the run",async()=>{
+  const page=openPage();
+  const go=id=>page.click({go:id});
+  await go("quick");
+  assert.doesNotMatch(page.view.innerHTML,/data-role="[^"]+"[^>]*aria-pressed="true"/);
+  await page.click({role:"R01"});
+  page.input("role-gender","man");
+  assert.doesNotMatch(page.view.innerHTML,/data-role="[^"]+"[^>]*aria-pressed="true"/);
+  await go("start");
+  page.input("adult",true);
+  await go("blind");
+  await page.click({action:"walk",turn:"0"});
+  await go("leave-live");
+  await go("pause-and-leave");
+  assert.match(page.view.innerHTML,/本场已暂停/);
+  await go("return-live");
+  assert.match(page.view.innerHTML,/查看已发生的事 · 1回合/);
+});
+
+test("undo restores the previous partner draft while locked tags remain unchanged",async()=>{
+  const page=openPage();
+  const go=id=>page.click({go:id});
+  await go("custom-entry");
+  page.input("partner.appearance.hairLength","long");
+  page.input("lock.appearance.hairLength",true);
+  page.input("partner.interaction.expression","reserved");
+  await go("prep-random");
+  assert.match(page.view.innerHTML,/<option value="long" selected>/);
+  assert.match(page.view.innerHTML,/data-go="prep-undo"/);
+  await go("prep-undo");
+  assert.match(page.view.innerHTML,/<option value="reserved" selected>/);
+  assert.doesNotMatch(page.view.innerHTML,/data-go="prep-undo"/);
 });
 
 test("browser back and forward restore the page without putting private setup data in the URL", () => {
@@ -256,6 +316,8 @@ test("model page sends free text, blocks duplicates, preserves failed input, and
   assert.match(page.view.innerHTML,/name="utterance"/);
   assert.equal(calls.filter(c=>c.path==="/api/control").at(-1).body.command,"cancel");
   await page.click({go:"reset"});
+  assert.notEqual(calls.filter(c=>c.path==="/api/control").at(-1).body.command,"discard");
+  await page.click({go:"confirm-reset"});
   assert.equal(calls.filter(c=>c.path==="/api/control").at(-1).body.command,"discard");
 });
 

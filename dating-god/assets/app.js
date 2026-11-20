@@ -48,6 +48,7 @@
       if (ticket !== generation) return;
       session = {sessionId:value.sessionId, version:value.version};
       run = value.run;
+      radar.setContext(run);
       radar.attach(value.sessionId,run?.branchFrom !== null,!!run?.practiceRuleId);
       if (value.radar) radar.update(value.radar);
       busy = false;
@@ -91,7 +92,12 @@
   let candidateIndex;
   let hint;
   let cardPreviewUrl;
-  let recommendedScene;
+  let homeRecommendations = [];
+  let homeRerolling = false;
+  let roleLimit = 12;
+  let partnerUndo = null;
+  let openBuilderGroups = new Set();
+  let suspended = false;
   let quickEntry = false;
   let directPreparation = false;
   let preferredRoleId = null;
@@ -100,6 +106,8 @@
   let roleDetailOpen = false;
   let sceneCatalogSelected = null;
   let sceneCatalogCategory = "全部";
+  let sceneCatalogSource = "";
+  let catalogFromPlan = false;
   let homeMethod = "roles";
   let homeCategory = "全部";
   let roleGender = "";
@@ -111,25 +119,51 @@
   let confirming = false;
   let sceneFirst = false;
 
-  function chooseRecommendation(exclude, category = "全部") {
-    const choices = library.scenes.filter(scene=>category==="全部"||scene.category===category);
-    const alternatives = choices.filter(scene=>scene.id!==exclude);
-    const pool = alternatives.length ? alternatives : choices;
-    return pool[crypto.getRandomValues(new Uint32Array(1))[0] % pool.length];
+  function shuffle(items, random) {
+    const result = [...items];
+    for (let i=result.length-1;i>0;i--) {
+      const j=Math.floor(random()*(i+1));
+      [result[i],result[j]]=[result[j],result[i]];
+    }
+    return result;
+  }
+  const secureRandom = () => crypto.getRandomValues(new Uint32Array(1))[0]/0x100000000;
+  function dealHomeScenes(category, previous=[], random=secureRandom) {
+    const old=new Set(previous.map(item=>item.id));
+    const candidates=shuffle(byCategory(category),random).sort((a,b)=>Number(old.has(a.id))-Number(old.has(b.id)));
+    const chosen=[];
+    if (category==="全部") {
+      const categories=new Set();
+      for (const item of candidates) {
+        if (categories.has(item.category)) continue;
+        chosen.push(item);
+        categories.add(item.category);
+        if (chosen.length===4) break;
+      }
+    }
+    for (const item of candidates) {
+      if (chosen.length===4) break;
+      if (!chosen.includes(item)) chosen.push(item);
+    }
+    const result=shuffle(chosen,random);
+    if (result.length>1 && result.every((item,i)=>item.id===previous[i]?.id)) result.push(result.shift());
+    return result;
   }
 
   function reset(next = "cover") {
     ++generation; retryTurn = null; busy = false; session = null; modelMode = false; utterance = "";
     preparation = window.DatingPreparation.create();
-    recommendedScene = chooseRecommendation();
+    homeRecommendations = dealHomeScenes("全部");
+    homeRerolling=false;roleLimit=12;partnerUndo=null;openBuilderGroups.clear();suspended=false;
     quickEntry = directPreparation = false;
     importText = "";
     preferredRoleId = null;
     selectedRoleId = null;
     roleSearch = "";
     roleDetailOpen = false;
-    sceneCatalogSelected = recommendedScene.id;
+    sceneCatalogSelected = null;
     sceneCatalogCategory = "全部";
+    sceneCatalogSource="";catalogFromPlan=false;
     homeMethod = "roles";
     homeCategory = settingsCategory = customCategory = "全部";
     roleGender = roleTrait = planIssue = preparationIssue = "";
@@ -188,26 +222,33 @@
   }
   const byCategory = category => library.scenes.filter(scene=>category==="全部"||scene.category===category);
   const sceneFacts = scene => `${scene.duration}分钟 · 模拟人均${scene.cost}元`;
-  function sceneCard(scene, attribute, { selected, recommended, issue } = {}) {
+  function sceneCard(scene, attribute, { selected, issue } = {}) {
     return `<button type="button" class="scene-tile choice-card tone-${tones[scene.category]||"outdoors"}" data-${attribute}="${esc(scene.id)}"${selected===undefined?"":` aria-pressed="${selected}"`}>
-      <span class="scene-tile-top">${categoryIcon(scene.category)}<span>${recommended?"随机推荐":esc(scene.category)}</span></span>
-      <strong${recommended?` data-scene-name="${esc(scene.name)}"`:""}>${esc(scene.name)}</strong>
+      <span class="scene-tile-top">${categoryIcon(scene.category)}<span>${esc(scene.category)}</span></span>
+      <strong>${esc(scene.name)}</strong>
       <span class="scene-description">${esc(scene.description||scene.intro)}</span>
       <small>${scene.metrics||sceneFacts(scene)}${issue?` <span class="scene-warning">${esc(issue)}</span>`:""}</small></button>`;
   }
+  function homeSceneCards() {
+    return homeRecommendations.map(scene=>sceneCard(scene,"home-scene",{selected:false})).join("");
+  }
+  function homeRefresh() {
+    const count=byCategory(homeCategory).length;
+    return `<button type="button" data-go="reroll" class="quiet refresh-button"${count<2?" disabled":""}>${icon("refresh")}${count>1&&count<=4?"换个顺序":"换一组推荐"}</button>${count===1?'<small class="subline">此分类只有1个场景</small>':""}`;
+  }
+  const methodCopy=custom=>custom?"按你的印象设定对象的相处方式。你可以选标签、锁定想保留的特征，其他留空。":"从现成角色里选一位。先看看对方的开场方式，再挑你想练的活动。";
   function cover() {
-    const related = byCategory(homeCategory).filter(item=>item.id!==recommendedScene.id);
-    const pool = homeCategory === "全部" ? related.filter((item,index)=>related.findIndex(other=>other.category===item.category)===index) : related;
+    if (suspended) return `<section class="panel suspended-view"><h1 tabindex="-1">本场已暂停</h1><p>你的进度还在。可以回来继续，或结束后去回看。</p><div class="buttons">${button("return-live","返回约会现场","primary")}${button("end-suspended","结束并回看")}</div></section>`;
     const custom = homeMethod === "custom";
     return `<section class="cover home-page">
+      <header class="home-heading"><h1 tabindex="-1">约会预演</h1><p class="home-deck">先模拟一场约会，再复盘自己的选择。</p></header>
       <div class="home-layout">
-        <section class="home-start"><h1 tabindex="-1">先模拟一场约会，<br>再复盘自己的选择</h1>
-          <p class="home-deck">从挑一个人、选一处见面地点开始。散场后，带走一份属于这一场的回看。</p>
-          <div class="start-panel"><div class="segment" role="group" aria-label="使用方式">
+        <section class="home-start">
+          <div class="start-panel"><h2>准备一场见面</h2><div class="segment" role="group" aria-label="使用方式">
             <button type="button" data-method="roles" aria-pressed="${!custom}">从角色库挑人</button>
             <button type="button" data-method="custom" aria-pressed="${custom}">自己捏人</button>
-          </div><p>${custom?"按你的印象捏一个人。先选相处方式，不确定的地方可以留空。":"看看角色怎么说话、平时会做什么，再选一位一起预演。"}</p>
-          ${button(custom?"custom-entry":"quick",custom?"开始捏对象":"浏览角色库","primary")}</div>
+          </div><p id="home-method-copy">${methodCopy(custom)}</p>
+          ${button(custom?"custom-entry":"quick",custom?"开始捏对象":"浏览角色库","primary")}<small class="start-note">选完对象后可以换场景、改偏好。</small></div>
         </section>
         <aside class="practice-slip" aria-labelledby="practice-slip-title">
           <div class="slip-topline">${categoryIcon("户外")}<span>短练 · 公园散步</span></div>
@@ -217,8 +258,8 @@
       </div>
       <section class="home-scenes" aria-labelledby="home-scenes-title">
         <div class="section-head"><h2 id="home-scenes-title">探索场景</h2>${button("all-scenes","浏览全部场景 →","quiet")}</div>
-        <div class="filter-bar">${categoryFilters("home",homeCategory)}${button("reroll",`${icon("refresh")}换一个推荐`,"quiet refresh-button")}</div>
-        <div class="home-scene-list">${sceneCard(recommendedScene,"home-scene",{recommended:true})}${pool.slice(0,3).map(item=>sceneCard(item,"home-scene")).join("")}</div>
+        <div class="filter-bar">${categoryFilters("home",homeCategory)}<div id="home-refresh">${homeRefresh()}</div></div>
+        <p id="recommendation-update" class="sr-only" aria-live="polite"></p><div class="home-scene-list" id="home-scene-grid">${homeSceneCards()}</div>
       </section>
       <p class="home-note">场景与人物为虚构设定。成年确认后可以开始预演。</p>
     </section>`;
@@ -251,75 +292,87 @@
   function roleLibrary() {
     const roles=filteredRoles();
     if (!roles.some(role=>role.id===selectedRoleId)) {
-      selectedRoleId=roles.find(role=>role.id===preferredRoleId)?.id||roles[0]?.id||null;
+      selectedRoleId=null;
       roleDetailOpen=false;
     }
     const selected=roles.find(role=>role.id===selectedRoleId);
+    const visible=roles.slice(0,roleLimit);
+    if (selected && !visible.includes(selected)) visible[visible.length-1]=selected;
     const badge = selected && engine.sceneById(selected.scenes[0])?.category;
     const supportsScene = role => sceneFirst && role.scenes.includes(config.scene);
-    return `<section class="panel role-library">
+    return `<section class="panel role-library${selected?" has-role-choice":""}">
       ${crumb("角色库")}<div class="section-head"><h1 tabindex="-1">角色库</h1>${button("random-role","按条件随机匹配","quiet")}</div>
       ${roleTabs(false)}${steps(0)}
-      ${sceneFirst?`<div class="context-strip">${categoryIcon(engine.sceneById(config.scene).category)}<span>已选场景 <strong>${esc(engine.sceneById(config.scene).name)}</strong></span>${button("all-scenes","更换场景","quiet")}</div>`:""}
+      ${sceneFirst?`<div class="context-strip">${categoryIcon(engine.sceneById(config.scene).category)}<span>已选场景 <strong>${esc(engine.sceneById(config.scene).name)}</strong></span>${button("change-catalog-scene","更换场景","quiet")}</div>`:""}
       <div class="library-toolbar"><label class="search-field"><span class="sr-only">搜索角色</span><input name="role-search" type="text" inputmode="search" value="${esc(roleSearch)}" placeholder="搜名字、兴趣或相处方式" autocomplete="off"></label>
       <label><span class="sr-only">按性别筛选</span><select name="role-gender">${[["","全部性别"],["woman","女性"],["man","男性"]].map(([key,label])=>option(key,label,roleGender)).join("")}</select></label>
       <label><span class="sr-only">按相处节奏筛选</span><select name="role-trait">${[["","所有相处节奏"],...Object.entries(library.traits)].map(([key,label])=>option(key,esc(label),roleTrait)).join("")}</select></label></div>
       <div class="library-layout"><section class="role-results"><div class="section-head"><h2>现成角色</h2><span class="library-count" aria-live="polite">${roles.length}位角色</span></div>
-      <div class="role-list">${roles.length?roles.map(role=>`<button type="button" data-role="${esc(role.id)}" class="role-row choice-card" aria-pressed="${selected?.id===role.id}">${avatar(role)}
-        <span class="role-row-copy"><strong>${esc(role.name)}</strong><small>${role.age}岁 · ${esc(roleLabels[role.presentation])} · ${esc(role.traits.slice(0,2).map(id=>library.traits[id]).join("、"))}</small><span>${supportsScene(role)?`<b class="compat-tag">适配已选场景</b> `:""}${esc(role.bio)}</span></span></button>`).join(""):`<div class="empty-filter">${icon("people")}<h3>没有符合筛选的角色</h3><p>试试少选一个条件，或按你的印象捏人。</p>${button("clear-role-search","清空筛选","primary")} ${button("custom-entry","自己捏人","quiet")}</div>`}</div></section>
+      <div class="role-list">${roles.length?visible.map(role=>`<button type="button" data-role="${esc(role.id)}" class="role-row choice-card" aria-pressed="${selected?.id===role.id}">${avatar(role)}
+        <span class="role-row-copy"><strong>${esc(role.name)}${sceneFirst?`<b class="compat-tag${supportsScene(role)?"":" not-compatible"}">${supportsScene(role)?"适配已选场景":"场景不适配"}</b>`:""}</strong><small>${role.age}岁 · ${esc(roleLabels[role.presentation])} · ${esc(role.traits.slice(0,2).map(id=>library.traits[id]).join("、"))}</small><span>${esc(role.bio)}</span></span></button>`).join(""):`<div class="empty-filter">${icon("people")}<h3>没有符合筛选的角色</h3><p>试试少选一个条件，或按你的印象捏人。</p>${button("clear-role-search","清空筛选","primary")} ${button("custom-entry","自己捏人","quiet")}</div>`}</div>${roles.length>roleLimit?button("more-roles",`加载更多角色（还有${roles.length-roleLimit}位）`,"more-roles"):""}</section>
       ${selected?`<aside class="role-profile tone-${tones[badge]||"culture"} ${roleDetailOpen?"profile-open":""}" id="role-details">
-        <div class="profile-top">${avatar(selected,true)}<div><h2 tabindex="-1">${esc(selected.name)}</h2><p>${selected.age}岁 · ${esc(roleLabels[selected.presentation])}</p></div>${button("role-list",roleDetailOpen?"收起档案":"查看档案","quiet mobile-profile-toggle")}</div>
+        <div class="profile-top">${avatar(selected,true)}<div><h2 tabindex="-1">${esc(selected.name)}</h2><p>${selected.age}岁 · ${esc(roleLabels[selected.presentation])}</p></div></div>
         <div class="profile-body"><p>${esc(selected.bio)}</p><blockquote>“${esc(selected.greeting)}”</blockquote>
         <dl><dt>兴趣</dt><dd>${esc(selected.interests.map(id=>library.interests[id]).filter(Boolean).join("、"))}</dd><dt>常见场景</dt><dd>${esc(selected.scenes.map(id=>engine.sceneById(id)?.name).filter(Boolean).join("、"))}</dd><dt>适合模式</dt><dd>${esc((selected.modes||Object.keys(modes)).map(id=>modes[id]).join("、"))}</dd></dl></div>
-        ${button("choose-role","和TA预演","primary")}</aside>`:""}</div>
+        ${button("choose-role","和TA预演","primary role-desktop-cta")}</aside>`:'<aside class="role-profile role-placeholder" id="role-details"><h2>先选一位角色</h2><p>点按角色卡，查看开场方式与适合的场景。</p></aside>'}</div>
+      ${selected?selectionBar("role-confirm-bar",selected.name,"","choose-role","和TA预演",{extra:button("role-list",roleDetailOpen?"收起档案":"查看档案","quiet")}):""}
     </section>`;
   }
 
-  function sceneCatalog() {
-    const scenes=byCategory(sceneCatalogCategory);
-    const selected=scenes.find(scene=>scene.id===sceneCatalogSelected)||scenes[0];
-    return `<section class="panel scene-catalog">${crumb("场景")}
-      <div class="section-head"><h1 tabindex="-1">场景</h1><span class="library-count">${library.scenes.length}种见面方式</span></div>
-      <div class="catalog-layout"><div>${categoryFilters("scene",sceneCatalogCategory)}
-      <div class="scene-grid">${scenes.map(scene=>sceneCard(scene,"scene-choice",{selected:selected.id===scene.id})).join("")}</div></div>
-      <aside class="scene-profile tone-${tones[selected.category]}">${categoryIcon(selected.category)}<h2 tabindex="-1">${esc(selected.name)}</h2>
-      <div class="profile-body"><p>${esc(selected.description||selected.intro)}</p><p class="profile-meta">${sceneFacts(selected)}</p><p class="subline">时间和费用为模拟设定。</p></div>
-      <button type="button" data-go="use-scene" class="primary">用这个场景</button></aside></div></section>`;
+  function selectionBar(id, label, detail, action, title, {disabled=false,extra="",leading=""}={}) {
+    return `<div id="${id}" class="scene-confirm-bar"><div class="selection-summary" aria-live="polite">${leading}<div><strong>${esc(label)}</strong>${detail?`<small>${esc(detail)}</small>`:""}</div></div>
+      <div class="selection-actions">${extra}<button type="button" data-go="${action}" class="primary"${disabled?" disabled":""}>${title}</button></div></div>`;
   }
 
+  function catalogCards() {
+    return byCategory(sceneCatalogCategory).map(scene=>sceneCard(scene,"scene-choice",{selected:sceneCatalogSelected===scene.id})).join("");
+  }
+  function catalogBar() {
+    const selected=engine.sceneById(sceneCatalogSelected);
+    const outside=selected&&sceneCatalogCategory!=="全部"&&selected.category!==sceneCatalogCategory;
+    const issue=selected&&sceneIssue(selected);
+    return selectionBar("catalog-bar", selected?.name||"先选一个场景",
+      selected?[outside?"在当前分类外":"",issue||sceneFacts(selected),sceneCatalogSource].filter(Boolean).join(" · "):"",
+      "use-scene","用这个场景",{disabled:!selected||Boolean(issue)});
+  }
+  function sceneCatalog() {
+    const count=byCategory(sceneCatalogCategory).length;
+    return `<section class="panel scene-catalog with-confirm">${crumb("场景")}
+      <div class="section-head"><h1 tabindex="-1">场景</h1><span id="catalog-count" class="library-count" aria-live="polite">${sceneCatalogCategory} · ${count}种</span></div>
+      <p class="subline">从一处见面地点开始，选定后再去挑人。</p>
+      ${categoryFilters("scene",sceneCatalogCategory)}
+      <div id="catalog-grid" class="scene-grid">${catalogCards()}</div>${catalogBar()}</section>`;
+  }
   function journal() {
     return `<section class="panel journal-page">${crumb("自查簿")}<h1 tabindex="-1">我的约会自查簿</h1><div id="radar-host"></div></section>`;
   }
 
   function navigation() {
     const section = {cover:"home",roles:"roles",preparation:preparation.step===1?"roles":"all-scenes",sceneCatalog:"all-scenes",settings:"all-scenes",preferences:"all-scenes",invitation:"all-scenes",journal:"journal"}[screen];
-    const inScene=screen==="live"||busy;
+    const inScene=busy||suspended;
     const links=[["home","首页"],["roles","角色库"],["all-scenes","场景"],["journal","自查簿"]];
     return `<nav class="page-nav" aria-label="网页导航"><span class="brand"><span aria-hidden="true">♡</span> Dating之神</span><div>
-      ${links.map(([id,label])=>`<button type="button" data-go="${id}" class="quiet${section===id?" nav-current":""}"${section===id?' aria-current="page"':""}${inScene?" disabled":""}>${label}</button>`).join("")}</div></nav>`;
+      ${screen==="live"?`<span class="nav-live-status">约会${run.phase==="paused"?"已暂停":"进行中"}</span>${button("leave-live","暂停并离开","quiet")}`:links.map(([id,label])=>`<button type="button" data-go="${id}" class="quiet${section===id?" nav-current":""}"${section===id?' aria-current="page"':""}${inScene?" disabled":""}>${label}</button>`).join("")}</div></nav>`;
   }
 
   function preferences() {
-    return `<section class="panel">
+    return `<section class="panel preferences-page">
       ${confirming?`${crumb("确认偏好","return-scenes","选场景")}<h1 tabindex="-1">确认偏好</h1>${steps(2)}`:heading("", "想遇见怎样的人？", "偏好只用来挑这一场。")}
-      <div class="form-grid">
+      <div class="form-grid"><section class="form-section"><h2>这一场怎么进行</h2>
         <label class="field"><span>这一场的节奏（自主选择）</span><select name="mode">${Object.entries(modes).map(([id,label])=>option(id,label,config.mode)).join("")}</select><small>高档会出现含糊回应、期待落差和关系张力；边界与随时退出始终有效。</small></label>
         <div class="field-row">
           <label class="field"><span>你们的关系起点</span><select name="stage">${Object.entries({first:"初次见面",second:"第二次约会",friends:"朋友相约",flirting:"正在暧昧",steady:"稳定交往"}).map(([id,label])=>option(id,label,config.stage)).join("")}</select></label>
           <label class="field"><span>这次的关系期待</span><select name="intent">${Object.entries({undecided:"还没想好",casual:"轻松相处",serious:"认真了解"}).map(([id,label])=>option(id,label,config.intent)).join("")}</select></label>
         </div>
-        <details class="setup-details"><summary>预算、时间和相处约定</summary><div class="form-grid">
-          <p class="subline">这些条件会作为本场安排让角色知晓；私人期待便笺只留在本地。</p>
+
           <div class="field-row"><label class="field"><span>本场预算（模拟人均，元）</span><input type="number" name="budget" min="0" max="100000" step="1" value="${config.budget}"></label><label class="field"><span>可用时间（分钟）</span><input type="number" name="timeBudget" min="5" max="1440" step="1" value="${config.timeBudget}"></label></div>
           <label class="field"><span>希望的相处方式（需现场协商）</span><select name="exclusivity">${Object.entries({unspecified:"暂不确定",exclusive:"希望彼此排他",open:"可接受开放关系"}).map(([id,label])=>option(id,label,config.exclusivity)).join("")}</select></label>
+        <details class="setup-details"><summary>更多安排</summary><div class="form-grid">
           <label class="field"><span>约会经验</span><select name="experience">${option("novice","刚开始尝试",config.experience)}${option("familiar","比较熟悉",config.experience)}</select></label>
           ${check("alcohol","这场愿意饮酒（不选也可去酒吧，选择无酒精饮品）",config.alcohol)}
           <label class="field"><span>饮食要求（可选，现场可知）</span><input name="diet" maxlength="160" value="${esc(config.diet)}" placeholder="例如，不吃花生；不需要填写病史"></label>
         </div></details>
-        ${confirming?`<details class="setup-details"><summary>练习重点与边界</summary><div class="form-grid"><label class="field"><span>私人便笺（仅留在本地）</span><textarea name="expectation" maxlength="320">${esc(config.expectation)}</textarea></label>
-        <fieldset><legend>避开的话题</legend><div class="checks">${Object.entries(library.topics).map(([id,label])=>check("avoid",label,config.avoid.includes(id),id)).join("")}</div></fieldset>
-        ${check("surprise","允许一点场景小变化",config.surprise)}${check("guidance","开场时给我一个方向",config.guidance)}</div></details>`:""}
-        <fieldset><legend>成年确认</legend>${check("adult", "我已年满 18 岁", config.adult)}</fieldset>
+        </section><section class="form-section"><h2>你和对方</h2>
         <div class="field-row">
           <label class="field"><span>想见的对象</span><select name="presentation">
             ${option("unspecified", "暂不指定，便笺不先标性别", config.presentation)}
@@ -340,8 +393,12 @@
           ${option("", "没有特别想选的", config.interest)}
           ${Object.entries(library.interests).map(([id, label]) => option(id, label, config.interest)).join("")}
         </select></label>
+      </section>        <section class="form-section"><h2>练习重点与边界</h2><div class="form-grid"><label class="field"><span>私人便笺（仅留在本地）</span><textarea name="expectation" maxlength="320">${esc(config.expectation)}</textarea></label>
+        <fieldset><legend>避开的话题</legend><div class="checks">${Object.entries(library.topics).map(([id,label])=>check("avoid",label,config.avoid.includes(id),id)).join("")}</div></fieldset>
+        ${check("surprise","允许一点场景小变化",config.surprise)}${check("guidance","开场时给我一个方向",config.guidance)}</div></section>
+
       </div>
-      <div class="buttons">${confirming?`${button("match","查看见面便笺","primary")}${button("return-scenes","返回选场景","quiet")}`:`${button("blind","直接去盲约","primary")}${button("settings","选地点和边界")}${button("home","返回首页","quiet")}`}</div>
+      <div class="preferences-submit">${check("adult","我已年满 18 岁，并知道这是一场虚构模拟",config.adult)}<p id="adult-reason" class="subline"${config.adult?" hidden":""}>请先确认成年，再查看见面便笺。</p><div class="buttons">${confirming?`<button type="button" data-go="match" id="preferences-next" class="primary"${config.adult?"":" disabled aria-describedby='adult-reason'"}>查看见面便笺</button>${button("return-scenes","返回选场景","quiet")}`:`${button("blind","直接去盲约","primary")}${button("settings","选地点和边界")}${button("home","返回首页","quiet")}`}</div></div>
     </section>`;
   }
 
@@ -384,20 +441,23 @@
       ${button("compatible-scenes","换场景")}${button("roles","换角色")}${button("confirm-preferences","改偏好","quiet")}${preferredRoleId?button("random-role","让系统重新匹配","quiet"):""}</div></aside>`;
   }
 
-  function scenePicker() {
-    return `<div class="scene-groups" aria-label="按活动选择场景">${categoryFilters("settings",settingsCategory)}<div class="scene-grid">${byCategory(settingsCategory).map(scene=>sceneCard(scene,"scene",{selected:config.scene===scene.id,issue:sceneIssue(scene)})).join("")}</div></div>`;
+  function planCards() {
+    return byCategory(settingsCategory).map(scene=>sceneCard(scene,"scene",{selected:config.scene===scene.id,issue:sceneIssue(scene)})).join("");
   }
-
-  function settings() {
+  function planBar() {
     const chosen=library.roles.find(role=>role.id===preferredRoleId);
     const scene=engine.sceneById(config.scene);
-    return `<section class="panel plan-page">${crumb("选场景","roles","角色库")}<h1 tabindex="-1">安排这一场</h1>${steps(1)}
-      ${planWarning()}
-      <div class="plan-layout">${scenePicker()}<aside class="plan-summary">
-        <div class="summary-person">${chosen?avatar(chosen):categoryIcon(scene.category)}<div><h2>${esc(chosen?.name||"随机匹配")}</h2><p>${esc(scene.name)} · ${sceneFacts(scene)}</p></div></div>
-        <div class="summary-controls">${button("roles","换一个人","quiet")}${check("adult","我已年满18岁",config.adult)}${button("confirm-preferences","确认偏好 →","primary")}</div>
-      </aside></div>
-    </section>`;
+    const issue=sceneIssue(scene);
+    const hidden=settingsCategory!=="全部"&&scene.category!==settingsCategory;
+    return selectionBar("plan-bar",`${chosen?.name||"随机匹配"} · ${scene.name}`,
+      [hidden?"在当前分类外":"",issue||sceneFacts(scene)].filter(Boolean).join(" · "),
+      "continue-plan","确认偏好 →",{disabled:Boolean(issue),extra:button("roles","换一个人","quiet")});
+  }
+  function settings() {
+    return `<section class="panel plan-page with-confirm">${crumb("选场景","roles","角色库")}<h1 tabindex="-1">安排这一场</h1>${steps(1)}
+      <div id="plan-warning-region">${planWarning()}</div>
+      <div class="scene-groups" aria-label="按活动选择场景">${categoryFilters("settings",settingsCategory)}<div class="scene-grid" id="plan-grid">${planCards()}</div></div>
+      ${planBar()}</section>`;
   }
 
   function invitation() {
@@ -441,28 +501,27 @@
     return `<section class="panel live-panel">
       <article class="theatre">
         <p class="kicker">${label} · ${timeLabel(engine.resolveScene ? engine.resolveScene(run,run.initialScene || run.scene) : engine.sceneById(run.initialScene || run.scene), run.elapsed)}</p><p class="mode-note">${modes[run.mode || config.mode]} · ${modeHelp[run.mode || config.mode]}</p>
-        <h1 tabindex="-1">${role.name} · ${run.location}</h1>
-        ${paused ? "<p class=\"line\">已经暂停。回到现场时，时间会从这一刻接上。</p>" : `
+        <h1 tabindex="-1">${esc(role.name)} · ${esc(run.location)}</h1>
+        ${paused ? "<p class=\"line\" tabindex=\"-1\">已经暂停。回到现场时，时间会从这一刻接上。</p>" : `
           ${last?.detail || !last ? `<p class="stage-detail" id="model-detail">${modelMode ? "" : esc(last?.detail || start.detail)}</p>` : ""}
-          <p class="line" id="model-line">「${modelMode ? "" : esc(last?.reply || start.line)}」</p>`}
+          <p class="line" id="model-line" tabindex="-1" aria-live="polite">「${modelMode ? "" : esc(last?.reply || start.line)}」</p>`}
       </article>
+      ${hint && !paused ? `<p class="prompt">可以从眼前的选择出发。${run.events.length ?
+        "照自己的节奏决定，也可以先保留意见或道别。" : scene.hint}</p>` : ""}
+      ${paused ? "" : `<div class="steps live-choices" aria-label="你想怎么做">${actions(regular)}</div>`}
+      ${modelMode && !paused ? `<label class="field"><span>你想说什么？</span><textarea name="utterance" maxlength="1200" ${busy ? "disabled" : ""}></textarea></label><div class="buttons"><button type="button" data-go="send" class="primary" ${busy ? "disabled" : ""}>${busy ? "正在回应…" : "发送"}</button>${busy ? button("cancel", "取消本次请求") : ""}</div>` : ""}
+      ${!paused && stations.length ? `<details class="station-options" data-live-section="stations"><summary>可提议第二站 · ${stations.length}个选择</summary><p class="subline">只显示本场时间和预算允许的活动。先提出，双方再确认出发。</p><div class="steps">${actions(stations)}</div></details>` : ""}
       <div class="control">
         ${paused ? button("resume", "回到现场") : button("pause", "暂停", "quiet")}
         ${!paused ? button("hint", hint ? "收起提示" : "我有点卡住", "quiet") : ""}
-        ${button("end", "提前散场", "quiet")}
-        <details class="scene-tools"><summary>更多</summary><div class="buttons">
+        <details class="scene-tools" data-live-section="controls"><summary>更多</summary><div class="buttons">
           ${button("radar-coach", "场外教练", "quiet")}${modelMode ? button("radar-preflight", "检查这句草稿", "quiet") : ""}
           ${Object.keys(modes).indexOf(run.mode || config.mode)>0 ? button("lower-mode", "降低强度", "quiet") : ""}
-          ${button("reset", "退出并清空本场", "quiet")}
+          ${button("end", "提前散场", "quiet danger")}${button("reset", "退出并清空本场", "quiet danger")}
         </div></details>
       </div>
-      ${hint && !paused ? `<p class="prompt">可以从眼前的选择出发。${run.events.length ?
-        "照自己的节奏决定，也可以先保留意见或道别。" : scene.hint}</p>` : ""}
-      ${modelMode && !paused ? `<label class="field"><span>你想说什么？</span><textarea name="utterance" maxlength="1200" ${busy ? "disabled" : ""}></textarea></label><div class="buttons"><button type="button" data-go="send" class="primary" ${busy ? "disabled" : ""}>${busy ? "正在回应…" : "发送"}</button>${busy ? button("cancel", "取消本次请求") : ""}</div>` : ""}
-      ${paused ? "" : `<div class="steps" aria-label="你想怎么做">${actions(regular)}</div>`}
-      ${!paused && stations.length ? `<details class="station-options"><summary>还有时间，提议一起去第二站</summary><p class="subline">只显示本场时间和预算允许的活动。先提出，双方再确认出发。</p><div class="steps">${actions(stations)}</div></details>` : ""}
       <div id="radar-host"></div>
-      ${run.events.length && !paused ? `<details><summary>看看已经发生的事</summary>${log(run.events)}</details>` : ""}
+      ${run.events.length ? `<details class="live-history" data-live-section="history"><summary>查看已发生的事 · ${run.events.length}回合</summary>${log(run.events)}</details>` : ""}
     </section>`;
   }
 
@@ -470,24 +529,24 @@
     const event = original.events[draft.selected];
     const suggestion = report.choices(original, draft.selected);
     return `<section class="panel review-panel">
-      ${heading("散场后 / 01", "想回看哪一刻？", original.outcome)}
-      ${config.expectation.trim() ? `<article class="ticket"><p class="meta">赴约前写给自己的期待</p><p>${esc(config.expectation)}</p>
-        ${check("includeExpectation", "把这条期待也写入 HTML 报告", draft.includeExpectation)}</article>` : ""}
-      ${original.events.length ? `<div class="steps" aria-label="选一个回合">${original.events.map((item, index) =>
-        `<button type="button" data-select="${index}" aria-pressed="${draft.selected === index}">${index + 1}. ${esc(item.label)}</button>`).join("")}</div>`
+      ${heading("", "选一个想回看的回合", esc(original.outcome))}
+      ${original.events.length ? `<ol class="review-timeline" aria-label="约会回合">${original.events.map((item,index)=>
+        `<li><button type="button" class="choice-card timeline-turn" data-select="${index}" aria-pressed="${draft.selected===index}"><span class="turn-index">${String(index+1).padStart(2,"0")}</span><span><strong>${esc(item.label)}</strong><small>${esc(item.reply)}</small>${item.before?.scene?`<span class="turn-location">${esc(sceneName(item.before.scene,original))}</span>`:""}</span></button></li>`).join("")}</ol>`
         : "<p>这场还没有可引用的互动。你可以留一句原本想试的事。</p>"}
       ${event ? `<article class="ticket"><p class="meta">这一刻 · 角色实际回应</p><p>「${esc(event.reply)}」</p>
         <p class="subline">这一刻，你在意的是对方给的答案，还是你可以自在地说出自己的选择？也可以都不是。</p>
         ${!alternative ? button("replay", "从这一幕重演") : "<p>重演已完成，回看将分开呈现。</p>"}</article>` : ""}
+      ${config.expectation.trim() ? `<article class="ticket reflection-card"><h2>赴约前的期待</h2><p>${esc(config.expectation)}</p>
+        ${check("includeExpectation","把这条期待写入HTML报告",draft.includeExpectation)}</article>`:""}
       ${original.preparation ? `<div class="form-grid"><h2>赴约准备</h2><p class="subline">只认领你愿意尝试的做法。模拟对象的反应不能代替真人回答。</p>${[['claimedAction','下次做法'],['question','需要向真人确认的问题'],['fallback','可行备选']].map(([key,label])=>`<label class="field"><span>${label}</span><input name="review-prep.${key}" maxlength="300" value="${esc(original.preparation[key]||'')}"></label>`).join('')}</div>` : ""}
-      <div class="form-grid">
-        <label class="field"><span>想留给自己的便笺（可选）</span><textarea name="note" maxlength="320" placeholder="我当时在意的是……">${esc(draft.note)}</textarea></label>
-        ${check("includeNote", "把这条私人便笺也写入 HTML 报告", draft.includeNote)}
+      <div class="reflection-grid"><section class="reflection-card"><h2>私人便笺</h2>
+        <label class="field"><span class="sr-only">想留给自己的便笺（可选）</span><textarea name="note" maxlength="320" placeholder="我当时在意的是……">${esc(draft.note)}</textarea></label>
+        ${check("includeNote", "把这条私人便笺写入HTML报告", draft.includeNote)}</section><section class="reflection-card"><h2>我想带走的一句话</h2>
         ${suggestion ? `<div>${button("suggest", "用一个可能的发现作草稿")}</div>` : ""}
-        <label class="field"><span>我想带走的一句话（可选）</span><input type="text" name="accepted" value="${esc(draft.accepted)}" maxlength="96" placeholder="按自己的话写，可以留空"></label>
-        ${check("confirmed", "这句话是我认领的发现，可用于报告和 Dating 卡", draft.confirmed)}
+        <label class="field"><span class="sr-only">我想带走的一句话（可选）</span><input type="text" name="accepted" value="${esc(draft.accepted)}" maxlength="96" placeholder="按自己的话写，可以留空"></label>
+        ${check("confirmed", "这句话是我认领的发现，可用于报告和Dating卡", draft.confirmed)}</section>
       </div>
-      <div class="buttons">${button("final", "查看这场回看", "primary")}${button("save-home", "结束并保存已完成摘要")}${button("reset", "不回看，结束这场", "quiet")}</div>
+      <div class="buttons">${button("final", "查看这场回看", "primary")}${button("save-home", "结束并保存已完成摘要")}${button("reset", "结束并清空这场", "quiet danger")}</div>
       <div id="radar-host"></div>
     </section>`;
   }
@@ -500,43 +559,65 @@
     const approved = report.claim(original, exportDraft(), alternative);
     const experiment = report.experiment(original, exportDraft(), alternative);
     return `<section class="panel report-panel">
-      ${heading("散场后 / 02", "散场之后", original.outcome)}
+      ${heading("", "散场之后", esc(original.outcome))}
+      <dl class="report-summary"><div><dt>这场对象</dt><dd>${esc(engine.resolveRole(original)?.name)}</dd></div><div><dt>场景</dt><dd>${esc(sceneName(original.initialScene||original.scene,original))}</dd></div><div><dt>互动</dt><dd>${original.events.length}回合${alternative?" · 已重演":""}</dd></div></dl>
       <article class="ticket"><p class="meta">这场 · ${[...new Set(original.stations || [original.scene])].map(id=>esc(sceneName(id,original))).join(" → ")}</p>
       <h2>${approved ? "带走的一点发现" : "留给自己的一个问题"}</h2>
       <p>${esc(approved || "回到那一刻，我最想保留的是怎样的相处方式？")}</p>
       ${experiment ? `<p><strong>下次可试</strong>　${esc(experiment)}</p>` : ""}
       ${draft.includeExpectation && config.expectation.trim() ? `<p><strong>写入报告的赴约期待</strong>　${esc(config.expectation)}</p>` : ""}
       ${draft.includeNote && draft.note.trim() ? `<p><strong>写入报告的私人便笺</strong>　${esc(draft.note)}</p>` : ""}</article>
-      ${original.events.length ? `<details><summary>现场记录 · ${original.events.length} 回合</summary>${log(original.events)}</details>` : "<p>没有可引用的互动。</p>"}
-      ${alternative ? `<details><summary>实际重演 · 从第 ${alternative.branchFrom + 1} 回合前开始</summary>
+      <section class="report-share"><h2>Dating卡</h2>
+        ${approved ? `<img id="card-art" class="card-preview" alt="分享卡预览：${esc(approved)}">
+        ${experiment ? check("includeExperiment","在分享卡上加一个下次观察点",draft.includeExperiment) : ""}`
+        : `<p class="subline">认领一句自己的发现后，就能把它做成Dating卡。</p>${button("review","返回认领发现","quiet")}`}
+      </section>
+      <details class="record-details"><summary>现场记录 · ${original.events.length}回合</summary>${original.events.length?log(original.events):"<p>这场还没有可引用的互动。</p>"}</details>
+      ${alternative ? `<details class="record-details"><summary>实际重演 · 从第 ${alternative.branchFrom + 1} 回合前开始</summary>
         ${log(alternative.events.slice(alternative.branchFrom))}<p>${esc(alternative.outcome)}</p></details>` : ""}
-      ${approved ? `<img id="card-art" class="card-preview" alt="分享卡预览：${esc(approved)}">
-        ${experiment ? check("includeExperiment", "在分享卡上加一个下次观察点", draft.includeExperiment) : ""}`
-        : "<p class=\"subline\">确认一条自己的发现后，才会有可下载的 Dating 卡。</p>"}
-      <div class="buttons">${button("download-report", "下载 HTML 回看", "primary")}
+      <div class="buttons report-actions">${button("download-report", "下载 HTML 回看", "primary")}
         ${approved ? button("download-card", "下载 Dating 卡（SVG）") : ""}
-        ${button("review", "返回调整", "quiet")}${button("save-home", "结束并保存已完成摘要", "quiet")}${button("reset", "结束并清空这场", "quiet")}</div>
-      <div id="radar-host"></div>
+        ${button("review","返回调整","quiet")}
+        <details class="scene-tools"><summary>更多</summary>${button("reset","结束并清空这场","quiet danger")}</details>
+      </div>
+      <details class="record-details"><summary>本机自查摘要</summary><div id="radar-host"></div><div class="buttons">${button("save-home","结束并保存已完成摘要")}</div></details>
     </section>`;
   }
 
-  function customScenePicker() {
+  function customScenes() {
     const special=[
       {id:"perler",name:"拼豆",category:"手作",description:"各自选图案，决定要不要交换几颗颜色。",metrics:"可自填地点、费用和时长"},
       {id:"tennis",name:"网球",category:"运动",description:"先商量是热身对打，还是一起从发球开始。",metrics:"可自填地点、费用和时长"},
       {id:"track",name:"操场相约",category:"运动",description:"按现场开放情况，选择散步或慢跑。",metrics:"需要确认允许进入"},
     ];
-    const scenes=[...library.scenes,...special].filter(item=>customCategory==="全部"||item.category===customCategory);
-    return `<div class="custom-scene-picker">${categoryFilters("custom",customCategory)}<div class="scene-grid">${scenes.map(item=>sceneCard(item,"custom-scene",{selected:(preparation.template||config.scene)===item.id})).join("")}</div></div>`;
+    return [...library.scenes,...special];
+  }
+  const customCards=scenes=>scenes.map(item=>sceneCard(item,"custom-scene",{selected:(preparation.template||config.scene)===item.id})).join("");
+  function customScenePicker() {
+    const scenes=customScenes().filter(item=>customCategory==="全部"||item.category===customCategory);
+    return `<div class="custom-scene-picker">${categoryFilters("custom",customCategory)}<div class="scene-grid" id="custom-grid">${customCards(scenes)}</div></div>`;
   }
 
+  function prepBar() {
+    if (preparation.step===1) {
+      const count=window.DatingPreparation.assumptionCount(preparation);
+      return selectionBar("builder-bar",`已设置${count}项`, "其余保持未知", "prep-next","继续选场景 →",
+        {extra:button("prep-back","上一步","quiet")});
+    }
+    const selected=customScenes().find(item=>item.id===(preparation.template||config.scene));
+    const issue=selected?.id==="track"&&!preparation.accessConfirmed?"请先确认操场允许进入":"";
+    const outside=selected&&customCategory!=="全部"&&selected.category!==customCategory;
+    return selectionBar("builder-bar",selected?.name||"先选一个场景",
+      [issue,outside?"在当前分类外":""].filter(Boolean).join(" · "),
+      "prep-next","确认偏好 →",{disabled:Boolean(issue),extra:button("prep-back","上一步","quiet")});
+  }
   function preparationView() {
     const budgetFields = `<div class="field-row"><label class="field">本场预算（元）<input name="budget" type="number" min="0" max="100000" value="${config.budget}"></label><label class="field">可用时间（分钟）<input name="timeBudget" type="number" min="5" max="1440" value="${config.timeBudget}"></label></div>`;
     const adultField = `<fieldset class="adult-gate"><legend>开始前确认</legend>${check("adult", "我已年满18岁", config.adult)}</fieldset>`;
     const step=preparation.step;
     const frame = step===1 ? {crumb:crumb("角色库"),controls:roleTabs(true)+steps(0)}
       : {crumb:crumb(step===2?"选场景":"确认偏好","prep-back","上一步"),controls:steps(step===2?1:2)};
-    return window.DatingPreparation.render(preparation, library, {budgetFields, adultField, currentScene:config.scene, frame:step?frame:"", direct:directPreparation, sceneCards:step===2&&directPreparation?customScenePicker():"", compact:window.matchMedia?.("(max-width: 768px)").matches, issue:preparationIssue});
+    return window.DatingPreparation.render(preparation, library, {budgetFields, adultField, currentScene:config.scene, frame:step?frame:"", direct:directPreparation, sceneCards:step===2&&directPreparation?customScenePicker():"", flowBar:step===1||(step===2&&directPreparation)?prepBar():"", canUndo:Boolean(partnerUndo), issue:preparationIssue});
 
   }
   const views = { preparation:preparationView, cover, roles:roleLibrary, sceneCatalog, journal, preferences, settings, invitation, live, review, final, practiceReview };
@@ -550,8 +631,26 @@
         }
       } catch { /* Some local file viewers do not support history writes. */ }
     }
+    const liveUpdate=screen==="live"&&next==="live"&&app.querySelector(".live-panel")?.nodeType;
+    const expanded=liveUpdate?[...app.querySelectorAll(".live-panel details[open][data-live-section]")].map(item=>item.dataset.liveSection):[];
     screen = next;
-    app.innerHTML = navigation() + views[next]();
+    if (liveUpdate) {
+      const recordHost=document.getElementById("radar-host");
+      updateRegion(".live-panel",live(),true);
+      if (recordHost) document.getElementById("radar-host")?.replaceWith(recordHost);
+      const marker=app.querySelector(".nav-live-status");
+      if(marker) marker.textContent=run.phase==="paused"?"约会已暂停":"约会进行中";
+      for (const section of expanded) {
+        const item=app.querySelector(`[data-live-section="${section}"]`);
+        if (item) item.open=true;
+      }
+    } else app.innerHTML = navigation() + views[next]();
+    if (next==="preparation"&&preparation.step===1) {
+      for (const key of openBuilderGroups) {
+        const item=app.querySelector(`[data-group="${key}"]`);
+        if (item?.nodeType) item.open=true;
+      }
+    }
     if (modelMode && next === "live") {
       const last = run.events.at(-1);
       const line = app.querySelector("#model-line");
@@ -561,14 +660,16 @@
       const input = app.querySelector('[name="utterance"]');
       if (input) input.value = utterance;
     }
-    radar.mount(next === "journal");
+    if (!liveUpdate) radar.mount(next === "journal");
     status.textContent = message;
     refreshCardPreview();
-    if (focus) app.querySelector("h1")?.focus({preventScroll:false});
+    if (focus && !liveUpdate) app.querySelector("h1")?.focus({preventScroll:false});
+    else if (liveUpdate && focus) app.querySelector(".line")?.focus({preventScroll:true});
   }
 
   window.addEventListener?.("popstate", event => {
     const next = event.state?.datingGod ? event.state.screen : null;
+    if (suspended && next!=="cover") { show("cover","",true,{replace:true});return; }
     if (!next || !Object.hasOwn(views,next)) return;
     if ((next==="invitation"&&!candidates.length) || (["live","review","final","practiceReview"].includes(next)&&!run)) {
       show("cover", "", true, {replace:true});
@@ -624,6 +725,7 @@
       show("live");
     });
     run = engine.createRun(runConfig, role.id);
+    radar.setContext(run);
     hint = config.guidance;
     show("live");
   }
@@ -645,18 +747,27 @@
     status.textContent = "已发起本地下载。";
   }
 
+  app.addEventListener("toggle",event=>{
+    const group=event.target.dataset?.group;
+    if (event.target.isConnected&&group) {
+      if (event.target.open) openBuilderGroups.add(group);
+      else openBuilderGroups.delete(group);
+    }
+  },true);
+
   app.addEventListener("input", (event) => {
+    if (radar.handleInput(event)) return;
     const { name, value, checked, type } = event.target;
     if (["role-search","role-gender","role-trait"].includes(name)) {
       if (event.isComposing) return;
       if (name==="role-search") roleSearch=value;
       if (name==="role-gender") roleGender=value;
       if (name==="role-trait") roleTrait=value;
-      const position=event.target.selectionStart;
-      show("roles", "", false);
-      const input=app.querySelector(`[name="${name}"]`);
-      input?.focus({preventScroll:true});
-      if (name==="role-search") input?.setSelectionRange?.(position??value.length,position??value.length);
+      roleLimit=12;
+      if (!filteredRoles().some(role=>role.id===selectedRoleId)) {
+        selectedRoleId=null;roleDetailOpen=false;
+      }
+      refreshRoles(true);
       return;
     }
     if (name === "role-choice" && candidates[Number(value)]) {
@@ -675,6 +786,7 @@
         const preview = document.getElementById("partner-preview-name");
         if (preview) preview.textContent = value.trim() || "你的对象草稿";
       }
+      if (key==="presentation" || key==="accessConfirmed") refreshBuilderSummary();
       if (key === "template") {
         const trackFields = app.querySelector(".track-fields");
         if (trackFields) trackFields.hidden = value !== "track";
@@ -687,15 +799,15 @@
       preparation.partnerSpec[group][key] = ["interests","hardNo"].includes(key) ? value.split(/[,，]/).map(x=>x.trim()).filter(Boolean) : value;
       preparation.partnerSpec.provenance ||= {};
       preparation.partnerSpec.provenance[group+"."+key] = value && value !== "unknown" ? "assumption" : "unknown";
-      const expression = document.getElementById("partner-preview-expression");
-      if (key === "expression" && expression) expression.textContent = window.DatingPreparation.expressionLabel(value);
-      const preview = app.querySelector("#partner-preview-traits");
-      const groupSummary = app.querySelector(`[data-partner-summary="${group}"]`);
-      if (preview) preview.textContent=window.DatingPreparation.groupSummary(preparation,"interaction")||"例如：慢慢熟悉、愿意一起商量。";
-      if (groupSummary) groupSummary.textContent=window.DatingPreparation.groupSummary(preparation,group)||"可选";
+      refreshBuilderSummary();
       return;
     }
-    if (name?.startsWith("lock.")) { const path=name.slice(5);preparation.locks=checked?[...new Set([...preparation.locks,path])]:preparation.locks.filter(x=>x!==path);return; }
+    if (name?.startsWith("lock.")) {
+      const path=name.slice(5);
+      preparation.locks=checked?[...new Set([...preparation.locks,path])]:preparation.locks.filter(x=>x!==path);
+      refreshBuilderSummary();
+      return;
+    }
     if (name === "utterance") { if (utterance !== value) retryTurn = null; utterance = value; return; }
     if (name === "traits" || name === "avoid") {
       const list = config[name];
@@ -712,9 +824,21 @@
         return;
       }
       config[name] = type === "checkbox" ? checked : value;
+      if (name==="adult") {
+        const next=app.querySelector("#preferences-next");
+        const reason=app.querySelector("#adult-reason");
+        if (next?.nodeType) {
+          next.disabled=!checked;
+          if (checked) next.removeAttribute("aria-describedby");
+          else next.setAttribute("aria-describedby","adult-reason");
+        }
+        if (reason?.nodeType) reason.hidden=checked;
+      }
       if (name === "player") {
         config.presentation = value === "man" ? "woman" : value === "woman" ? "man" : "unspecified";
-        show("preferences", "已根据本场视角调整对象偏好。", false);
+        const field=app.querySelector('[name="presentation"]');
+        if (field?.nodeType) field.value=config.presentation;
+        status.textContent="已根据本场视角调整对象偏好。";
       }
     } else if (Object.hasOwn(draft, name)) {
       draft[name] = type === "checkbox" ? checked : value;
@@ -728,6 +852,7 @@
 
   function openSceneFirst(sceneId) {
     config.scene=sceneId;
+    selectedRoleId=null;roleDetailOpen=false;
     preparation.template=sceneId;
     preferredRoleId=null;
     sceneFirst=quickEntry=true;
@@ -743,67 +868,205 @@
     return true;
   }
 
+  function updateRegion(selector, html, outer=false) {
+    const element=app.querySelector(selector);
+    if (!element?.nodeType) return false;
+    if (outer) element.outerHTML=html;
+    else element.innerHTML=html;
+    return true;
+  }
+  function setPressed(attribute,value) {
+    app.querySelectorAll?.(`[data-${attribute}]`).forEach(element=>{
+      element.setAttribute("aria-pressed",String(element.getAttribute(`data-${attribute}`)===value));
+    });
+  }
+  function refreshHomeScenes(filterChanged=false) {
+    if (filterChanged) {
+      setPressed("home-category",homeCategory);
+      updateRegion("#home-refresh",homeRefresh());
+    }
+    if (!updateRegion("#home-scene-grid",homeSceneCards())) show("cover","",false);
+    else {
+      const grid=app.querySelector("#home-scene-grid");
+      const animation=window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? null : grid.animate?.([{opacity:.45},{opacity:1}],{duration:150});
+      if (animation) {
+        homeRerolling=true;
+        const done=()=>{homeRerolling=false;};
+        animation.finished.then(done,done);
+      }
+      app.querySelector("#recommendation-update").textContent=`已更新${homeRecommendations.length}个推荐场景`;
+    }
+  }
+  function refreshBuilderSummary() {
+    if (preparation.step!==1 && preparation.step!==2) return;
+    const ui=window.DatingPreparation;
+    const contents=ui.previewValues(preparation);
+    for (const [id,value] of Object.entries(contents)) {
+      const element=app.querySelector(`#${id}`);
+      if (element?.nodeType) element.textContent=value;
+    }
+    for (const group of ["appearance","lifestyle","conditions"]) {
+      const element=app.querySelector(`[data-partner-summary="${group}"]`);
+      if (element?.nodeType) element.textContent=ui.groupSummary(preparation,group,2)||"可选";
+    }
+    const random=app.querySelector('[data-go="prep-random"]');
+    const lockNote=app.querySelector("#random-lock-note");
+    const locked=ui.randomizableCount(preparation)===0;
+    if (random?.nodeType) random.disabled=locked;
+    if (lockNote?.nodeType) lockNote.hidden=!locked;
+    const label=app.querySelector("#builder-bar .selection-summary strong");
+    if (label?.nodeType && preparation.step===1) label.textContent=contents["builder-summary-count"];
+    if (preparation.step===2 && app.querySelector("#builder-bar")?.nodeType) updateRegion("#builder-bar",prepBar(),true);
+  }
+
+  function refreshPlan(filterChanged=false) {
+    if (filterChanged) {
+      setPressed("settings-category",settingsCategory);
+      updateRegion("#plan-grid",planCards());
+    } else {
+      setPressed("scene",config.scene);
+      updateRegion("#plan-warning-region",planWarning());
+    }
+    if (!updateRegion("#plan-bar",planBar(),true)) show("settings","",false);
+  }
+
+  function refreshRoles(resultsChanged=false) {
+    const root=app.querySelector(".role-library");
+    if (!root?.nodeType) { show("roles","",false); return; }
+    const next=document.createElement("template");
+    next.innerHTML=roleLibrary();
+    const selectors=resultsChanged?[".role-results","#role-details"]:["#role-details"];
+    selectors.forEach(selector=>updateRegion(selector,next.content.querySelector(selector).outerHTML,true));
+    const currentBar=app.querySelector("#role-confirm-bar");
+    const nextBar=next.content.querySelector("#role-confirm-bar");
+    if (currentBar && nextBar) currentBar.replaceWith(nextBar);
+    else if (nextBar) root.append(nextBar);
+    else currentBar?.remove();
+    setPressed("role",selectedRoleId);
+    root.classList.toggle("has-role-choice",Boolean(selectedRoleId));
+  }
+
+  function refreshCatalog(filterChanged=false) {
+    if (filterChanged) {
+      setPressed("scene-category",sceneCatalogCategory);
+      updateRegion("#catalog-grid",catalogCards());
+      const count=app.querySelector("#catalog-count");
+      if (count?.nodeType) count.textContent=`${sceneCatalogCategory} · ${byCategory(sceneCatalogCategory).length}种`;
+    } else setPressed("scene-choice",sceneCatalogSelected);
+    if (!updateRegion("#catalog-bar",catalogBar(),true)) show("sceneCatalog","",false);
+  }
+
+  let pendingDialog = "";
+  function openFlowDialog(kind, opener) {
+    if (pendingDialog) return;
+    pendingDialog=kind;
+    if (!app.nodeType) return;
+    const dialog=document.createElement("dialog");
+    dialog.className="flow-dialog";
+    dialog.setAttribute("aria-labelledby","flow-dialog-title");
+    const leaving=kind==="leave";
+    dialog.innerHTML=`<h2 id="flow-dialog-title">${leaving?"怎么离开现场？":"清空这场约会？"}</h2>
+      <p>${leaving?"可以暂停后从首页回来，也可以直接结束并查看复盘。":"这场的原局、重演和关联自查摘要将被移除。已经下载的文件会保留。"}</p>
+      <div class="buttons">${button("close-flow-dialog","返回","quiet")}${leaving?`${button("end-from-dialog","结束并回看")}${button("pause-and-leave","暂停并离开","primary")}`:button("confirm-reset","确认清空","primary danger-fill")}</div>`;
+    app.append(dialog);
+    dialog.addEventListener("close",()=>{ if(pendingDialog===kind) pendingDialog="";dialog.remove();if(opener?.isConnected)opener.focus({preventScroll:true}); });
+    dialog.showModal();
+    dialog.querySelector('[data-go="close-flow-dialog"]').focus();
+  }
+  function closeFlowDialog() {
+    pendingDialog="";
+    app.querySelector("dialog.flow-dialog")?.close?.();
+  }
+  function leavePaused() {
+    suspended=true;
+    show("cover");
+  }
+
   app.addEventListener("click", async (event) => {
     if (event.target.closest("button")?.dataset.radar) return radar.handle(event);
     const target = event.target.closest("button");
     if (!target) return;
     const {go,action,turn,select,scene,role,sceneChoice,sceneCategory,homeScene,homeCategory:category,settingsCategory:planCategory,customCategory:prepCategory,customScene,method}=target.dataset;
-    if (busy && screen !== "live" && go !== "reset") return;
-    if (method || category) {
-      if (method) homeMethod=method;
-      if (category) {
-        homeCategory=category;
-        if (category!=="全部"&&recommendedScene.category!==category) recommendedScene=chooseRecommendation(null,category);
-      }
-      show("cover","",false);
-      app.querySelector(method?`[data-method="${homeMethod}"]`:`[data-home-category="${homeCategory}"]`)?.focus({preventScroll:true});
+    if (busy && screen !== "live") return;
+    if (suspended && !["return-live","end-suspended"].includes(go)) return;
+    if (method) {
+      homeMethod=method;
+      const custom=method==="custom";
+      setPressed("method",method);
+      const copy=app.querySelector("#home-method-copy");
+      const cta=app.querySelector(".start-panel .primary");
+      if (copy?.nodeType && cta?.nodeType) {
+        copy.textContent=methodCopy(custom);
+        cta.dataset.go=custom?"custom-entry":"quick";
+        cta.textContent=custom?"开始捏对象":"浏览角色库";
+      } else show("cover","",false);
+      app.querySelector(`[data-method="${homeMethod}"]`)?.focus({preventScroll:true});
+      return;
+    }
+    if (category && category!==homeCategory) {
+      homeCategory=category;
+      homeRecommendations=dealHomeScenes(category,homeRecommendations);
+      refreshHomeScenes(true);
       return;
     }
     if (role) {
-      if (!library.roles.some(item=>item.id===role)) return;
+      if (!filteredRoles().some(item=>item.id===role)) return;
       selectedRoleId=role;
       roleDetailOpen=false;
-      const previous=app.querySelector(".role-list")?.scrollTop;
-      show("roles","",false);
-      const list=app.querySelector(".role-list");
-      if (list && Number.isFinite(previous)) list.scrollTop=previous;
-      app.querySelector(`[data-role="${role}"]`)?.focus({preventScroll:true});
+      refreshRoles();
       return;
     }
     if (prepCategory || customScene) {
-      if (prepCategory) customCategory=prepCategory;
-      if (customScene) preparation.template=customScene;
-      show("preparation","",false);
-      app.querySelector(prepCategory?`[data-custom-category="${prepCategory}"]`:`[data-custom-scene="${customScene}"]`)?.focus({preventScroll:true});
+      if (prepCategory) {
+        customCategory=prepCategory;
+        setPressed("custom-category",customCategory);
+        updateRegion("#custom-grid",customCards(customScenes().filter(item=>customCategory==="全部"||item.category===customCategory)));
+      }
+      if (customScene) {
+        preparation.template=customScene;
+        setPressed("custom-scene",customScene);
+        const fields=app.querySelector(".track-fields");
+        if (fields?.nodeType) {
+          fields.hidden=customScene!=="track";
+          if (customScene==="track") fields.closest("details").open=true;
+        }
+      }
+      if (!updateRegion("#builder-bar",prepBar(),true)) show("preparation","",false);
       return;
     }
-    if (sceneCategory || planCategory) {
-      if (sceneCategory) {
+    if (sceneCategory) {
+      if (sceneCatalogCategory!==sceneCategory) {
         sceneCatalogCategory=sceneCategory;
-        const visible=byCategory(sceneCategory);
-        if (!visible.some(item=>item.id===sceneCatalogSelected)) sceneCatalogSelected=visible[0].id;
-      } else settingsCategory=planCategory;
-      show(sceneCategory?"sceneCatalog":"settings","",false);
-      app.querySelector(sceneCategory?`[data-scene-category="${sceneCategory}"]`:`[data-settings-category="${planCategory}"]`)?.focus({preventScroll:true});
+        refreshCatalog(true);
+      }
+      return;
+    }
+    if (planCategory) {
+      settingsCategory=planCategory;
+      refreshPlan(true);
       return;
     }
     if (sceneChoice) {
-      if (!library.scenes.some(item=>item.id===sceneChoice)) return;
+      if (!engine.sceneById(sceneChoice)) return;
       sceneCatalogSelected=sceneChoice;
-      show("sceneCatalog","",false);
-      app.querySelector(`[data-scene-choice="${sceneChoice}"]`)?.focus({preventScroll:true});
+      sceneCatalogSource="";
+      refreshCatalog();
       return;
     }
     if (homeScene) {
-      if (library.scenes.some(item=>item.id===homeScene)) openSceneFirst(homeScene);
+      if (!engine.sceneById(homeScene)) return;
+      sceneCatalogSelected=homeScene;
+      sceneCatalogCategory=homeCategory;
+      sceneCatalogSource="已带入首页选择";
+      catalogFromPlan=false;
+      show("sceneCatalog");
       return;
     }
     if (scene) {
       if (!library.scenes.some(item=>item.id===scene)) return;
       config.scene=scene;
       planIssue=explainPlan();
-      show("settings","",false);
-      app.querySelector(`[data-scene="${scene}"]`)?.focus({preventScroll:true});
+      refreshPlan();
       return;
     }
     if (action) {
@@ -822,7 +1085,7 @@
       if (draft.selected !== Number(select)) draft.confirmed = false;
       draft.selected = Number(select);
       show("review", "", false);
-      app.querySelector(`[data-select="${select}"]`).focus();
+      app.querySelector(`[data-select="${select}"]`).focus({preventScroll:true});
       return;
     }
     if (go?.startsWith("prep-") || go === "prepare") {
@@ -830,6 +1093,12 @@
         if(go === "prepare") { show("preparation");return; }
         if(go === "prep-exit") { show("cover");return; }
         if (go==="prep-next" || go==="prep-back") preparationIssue="";
+        if (go==="prep-next" && preparation.step===2 && preparation.template==="track" && !preparation.accessConfirmed) {
+          status.textContent="请先确认操场允许进入。";
+          const access=app.querySelector('[name="prep.accessConfirmed"]');
+          if (access?.nodeType) { access.closest("details").open=true;access.focus(); }
+          return;
+        }
         if(go === "prep-next")preparation.step=Math.min(3,preparation.step+1);
         if (go === "prep-back") {
           if (directPreparation && preparation.step === 1) { show("roles"); return; }
@@ -838,11 +1107,38 @@
         if(go === "prep-custom")preparation.source="custom";
         if(go === "prep-existing") { preparation.source="preset";preparation.presetId=preparation.presetId||library.roles[0].id;preparation.partnerSpec=JSON.parse(JSON.stringify(window.DatingPartnerModel.fromPreset(library.roles.find(r=>r.id===preparation.presetId)))); }
         if(go === "prep-next" && preparation.source==="preset" && preparation.step===2) preparation.partnerSpec=JSON.parse(JSON.stringify(window.DatingPartnerModel.fromPreset(library.roles.find(r=>r.id===preparation.presetId))));
-        if(go === "prep-random") { const locked={};for(const path of preparation.locks){const [g,k]=path.split('.');locked[g] ||= {};locked[g][k]=preparation.partnerSpec[g]?.[k];}preparation.partnerSpec=JSON.parse(JSON.stringify(window.DatingPartnerModel.random(preparation.partnerSpec,crypto.getRandomValues(new Uint32Array(1))[0],locked)));preparation.source="random"; }
+        if (go==="prep-random" || go==="prep-undo") {
+          const opened=[...(app.querySelectorAll?.(".builder-extra[open]")||[])].map(item=>item.dataset.group);
+          let message="";
+          if (go==="prep-random") {
+            if (!window.DatingPreparation.randomizableCount(preparation)) return;
+            const before=preparation.partnerSpec;
+            const locked={};
+            for (const path of preparation.locks) {
+              const [group,key]=path.split(".");
+              (locked[group]||={})[key]=before[group]?.[key];
+            }
+            const after=JSON.parse(JSON.stringify(window.DatingPartnerModel.random(before,crypto.getRandomValues(new Uint32Array(1))[0],locked)));
+            partnerUndo={partnerSpec:before,source:preparation.source};
+            preparation.partnerSpec=after;
+            preparation.source="random";
+            const changed=window.DatingPreparation.fields.filter(([group,key])=>JSON.stringify(before[group]?.[key])!==JSON.stringify(after[group]?.[key])).length;
+            message=`更新了${changed}项，保留${preparation.locks.length}项锁定设置。`;
+          } else if (partnerUndo) {
+            preparation.partnerSpec=partnerUndo.partnerSpec;
+            preparation.source=partnerUndo.source;
+            partnerUndo=null;
+            message="已撤销上次随机。";
+          }
+          show("preparation",message,false);
+          opened.forEach(group=>{ const details=app.querySelector(`[data-group="${group}"]`); if(details) details.open=true; });
+          app.querySelector(`[data-go="${go==="prep-undo"?"prep-random":go}"]`)?.focus({preventScroll:true});
+          return;
+        }
         if(go === "prep-save") { window.localStorage.setItem("dating-preparation-v1",window.DatingPreparation.exportConfig(preparation));status.textContent="仅保存对象配置，没有保存聊天。";return; }
         if(go === "prep-export") { download(window.DatingPreparation.exportConfig(preparation),"dating-preparation.json","application/json");return; }
         if(go === "prep-delete") { window.localStorage.removeItem("dating-preparation-v1");status.textContent="已删除本机配置，本场仍保留。";return; }
-        if(go === "prep-load" || go === "prep-import") { const text=go === "prep-load" ? window.localStorage.getItem("dating-preparation-v1") : importText;if(!text)throw Error("没有可读取的配置");const restored=window.DatingPreparation.importConfig(text);if(!window.DatingPartnerModel.validate(restored.partnerSpec).valid)throw Error("对象配置不合法");preparation=restored; }
+        if(go === "prep-load" || go === "prep-import") { const text=go === "prep-load" ? window.localStorage.getItem("dating-preparation-v1") : importText;if(!text)throw Error("没有可读取的配置");const restored=window.DatingPreparation.importConfig(text);if(!window.DatingPartnerModel.validate(restored.partnerSpec).valid)throw Error("对象配置不合法");preparation=restored;partnerUndo=null; }
         if (["prep-offline", "prep-model", "prep-auto"].includes(go)) {
           if (busy || !checkAdult()) return;
           const next = window.DatingPreparation.compile(preparation, config, library);
@@ -875,25 +1171,47 @@
         if (screen !== "live" && !busy) show("roles");
         break;
       case "all-scenes":
-        if (screen !== "live" && !busy) { if (!byCategory(sceneCatalogCategory).some(item=>item.id===sceneCatalogSelected)) sceneCatalogSelected=byCategory(sceneCatalogCategory)[0].id; show("sceneCatalog"); }
+        if (screen!=="live" && !busy && screen!=="sceneCatalog") {
+          sceneCatalogSelected=null;sceneCatalogCategory="全部";sceneCatalogSource="";catalogFromPlan=false;
+          show("sceneCatalog");
+        }
         break;
-      case "use-scene":
-        openSceneFirst(sceneCatalogSelected||recommendedScene.id);
+      case "change-catalog-scene":
+        sceneCatalogSelected=config.scene;sceneCatalogCategory="全部";sceneCatalogSource="";catalogFromPlan=true;
+        show("sceneCatalog");
         break;
+      case "use-scene": {
+        const scene=engine.sceneById(sceneCatalogSelected);
+        if (!scene || sceneIssue(scene)) break;
+        if (catalogFromPlan) {
+          config.scene=scene.id;
+          preparation.template=scene.id;
+          sceneFirst=true;
+          show("roles");
+        } else openSceneFirst(scene.id);
+        break;
+      }
       case "choose-role": {
         const role=library.roles.find(item=>item.id===selectedRoleId);
         if(!role){status.textContent="先从列表里选一位角色。";break;}
-        preferredRoleId=role.id;config.presentation=role.presentation;
+        preferredRoleId=role.id;
         const adjusted=role.modes?.length&&!role.modes.includes(config.mode);
         if(adjusted)config.mode=role.modes[0];
         quickEntry=true;modelMode=false;planIssue=explainPlan();show("settings", adjusted?`${role.name}更适合「${modes[config.mode]}」，已为本场调整；可从更多偏好里改回来。`:"");
         break;
       }
       case "role-list":
-        roleDetailOpen=!roleDetailOpen;show("roles","",false);app.querySelector(".mobile-profile-toggle")?.focus({preventScroll:true});
+        roleDetailOpen=!roleDetailOpen;refreshRoles();
+        if (roleDetailOpen) app.querySelector("#role-details")?.scrollIntoView?.({block:"nearest"});
+        app.querySelector('#role-confirm-bar [data-go="role-list"]')?.focus({preventScroll:true});
         break;
       case "clear-role-search":
-        roleSearch=roleGender=roleTrait="";roleDetailOpen=false;show("roles","",false);app.querySelector('[name="role-search"]')?.focus();
+        roleSearch=roleGender=roleTrait="";roleDetailOpen=false;roleLimit=12;
+        for (const name of ["role-search","role-gender","role-trait"]) {
+          const input=app.querySelector(`[name="${name}"]`);
+          if (input) input.value="";
+        }
+        refreshRoles(true);app.querySelector('[name="role-search"]')?.focus({preventScroll:true});
         break;
       case "random-role": {
         const wasRecovery=Boolean(planIssue);
@@ -903,12 +1221,17 @@
         else if (!wasRecovery) show("settings");
         break;
       }
+      case "continue-plan":
+        if (sceneIssue(engine.sceneById(config.scene))) break;
+        confirming=true;
+        show("preferences");
+        break;
       case "confirm-preferences":
         confirming=true;
         show("preferences");
         break;
       case "return-scenes":
-        planIssue="";
+        planIssue=explainPlan();
         show("settings");
         break;
       case "compatible-scenes": {
@@ -928,13 +1251,18 @@
         if (screen !== "live" && !busy) show("journal");
         break;
       case "reroll":
-        recommendedScene = chooseRecommendation(recommendedScene.id,homeCategory);
-        show("cover", "", false);
-        app.querySelector('[data-go="reroll"]')?.focus();
+        if (!homeRerolling && byCategory(homeCategory).length>1) {
+          homeRecommendations=dealHomeScenes(homeCategory,homeRecommendations);
+          refreshHomeScenes();
+        }
         break;
-      case "use-recommendation":
-        openSceneFirst(recommendedScene.id);
+      case "more-roles": {
+        const first=filteredRoles()[roleLimit]?.id;
+        roleLimit+=12;
+        refreshRoles(true);
+        if (first) app.querySelector(`[data-role="${first}"]`)?.focus({preventScroll:true});
         break;
+      }
       case "quick":
         quickEntry = true; modelMode = false;show("roles");
         break;
@@ -959,7 +1287,7 @@
       }
       case "radar-coach": return radar.coach(false);
       case "radar-preflight": return radar.coach(true);
-      case "save-home": if(await radar.save()){reset();} break;
+      case "save-home": if(await radar.save()){reset(); status.textContent="已保存本场自查摘要。";} break;
       case "send": if (utterance.trim()) return sendModel({text:utterance}); break;
       case "cancel": return control("cancel");
       case "lower-mode": {
@@ -995,10 +1323,41 @@
         break;
       case "swap": candidateIndex = (candidateIndex + 1) % candidates.length; show("invitation"); break;
       case "meet":
-        if (!candidates[candidateIndex] || !checkPlan() || busy) break;
+        if (!candidates[candidateIndex] || !checkAdult() || busy || showPlanIssue()) break;
+        const current=matchingRoles().find(role=>role.id===candidates[candidateIndex].id);
+        if (!current) {
+          show("preferences","条件已变更，请重新查看见面便笺。");
+          break;
+        }
         if (quickEntry) modelMode = await detectModel();
         if (screen !== "invitation") break;
-        return startDate(candidates[candidateIndex]);
+        return startDate(current);
+      case "close-flow-dialog": closeFlowDialog(); break;
+      case "leave-live":
+        if (!busy) openFlowDialog("leave",target);
+        break;
+      case "pause-and-leave":
+        if (pendingDialog!=="leave"||busy) break;
+        closeFlowDialog();
+        if(run.phase==="paused") return leavePaused();
+        if(modelMode) return modelRequest("/api/control",{sessionId:session.sessionId,command:"pause"},leavePaused);
+        run=engine.pause(run);leavePaused();
+        break;
+      case "return-live":
+        suspended=false;show("live");
+        break;
+      case "end-from-dialog":
+        if(pendingDialog!=="leave"||busy) break;
+        closeFlowDialog();
+        if(modelMode) return control("end");
+        run=engine.end(run);finish();
+        break;
+      case "end-suspended":
+        suspended=false;
+        show("live");
+        if(modelMode) return control("end");
+        run=engine.end(run);finish();
+        break;
       case "pause": if (modelMode) return control("pause"); run = engine.pause(run); show("live"); break;
       case "resume": if (modelMode) return control("resume"); run = engine.resume(run); show("live"); break;
       case "hint":
@@ -1039,8 +1398,13 @@
         if (image) download(image, "个人 Dating 卡.svg", "image/svg+xml;charset=utf-8");
         break;
       }
-      case "reset": {
-        radar.discard();
+      case "reset":
+        if (run) { openFlowDialog("reset",target);break; }
+        reset();
+        break;
+      case "confirm-reset": {
+        if (pendingDialog!=="reset") break;
+        closeFlowDialog();
         if (modelMode && session) {
           ++generation;
           busy = true;
@@ -1048,6 +1412,8 @@
           try { await api("/api/control", {sessionId:session.sessionId, command:"discard"}); }
           catch (error) { if (error.code !== "SESSION_NOT_FOUND") { busy = false; status.textContent = `清空失败：${error.message}`; break; } }
         }
+        try { await radar.discard(); }
+        catch (error) { busy=false; status.textContent=`本机摘要清空失败：${error.message}`; break; }
         reset();
         break;
       }
