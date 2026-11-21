@@ -281,10 +281,14 @@ function createDialogueCore(options = {}) {
       }
     },
     control(input) {
-      exactKeys(input, ['sessionId', 'command', 'index', 'mode']);
+      exactKeys(input, input?.command==='status'?['sessionId','command','requestId']:['sessionId','command','index','mode']);
       if (!['pause', 'resume', 'end', 'cancel', 'replay', 'discard', 'set-mode', 'status'].includes(input.command)) throw bad('控制操作无效。');
       const session = get(input.sessionId);
-      if(input.command==='status')return {...publicState(session),opening:copy(session.opening),pending:Boolean(session.pending)};
+      if(input.command==='status'){
+        if(input.requestId!==undefined&&(typeof input.requestId!=='string'||!/^[a-zA-Z0-9_-]{1,100}$/.test(input.requestId)))throw bad('请求编号无效。');
+        return {...publicState(session),opening:copy(session.opening),pending:Boolean(session.pending),
+          ...(input.requestId?{committed:Boolean(session.requests.get(input.requestId)?.result)}:{})};
+      }
       if(input.command === 'set-mode') {
         if(!MODES.includes(input.mode)) throw bad('强度无效。');
         if(!['live','paused'].includes(session.run.phase)) throw conflict('本场已结束，不能调整强度。');

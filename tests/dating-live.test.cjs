@@ -114,6 +114,12 @@ test('idempotent retry is cached, changed payload and stale version are rejected
   const first = await f.request('/api/turn', input);
   const retry = await f.request('/api/turn', input);
   assert.deepEqual(retry.data, first.data);
+  const readReceipt = requestId => f.request('/api/control', { sessionId:opened.sessionId, command:'status', requestId });
+  const receipt = await readReceipt(input.requestId);
+  assert.equal(receipt.status, 200);
+  assert.equal(receipt.data.committed, true);
+  assert.equal(receipt.data.version, first.data.version);
+  assert.equal((await readReceipt('unknown')).data.committed, false);
   assert.equal(f.calls.length, 1);
   assert.equal((await f.request('/api/turn', { ...input, text: 'changed' })).status, 409);
   assert.equal((await f.request('/api/turn', { ...input, requestId: 'stale' })).status, 409);
