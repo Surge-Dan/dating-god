@@ -522,3 +522,35 @@ body:not(:has(.scene-confirm-bar)) .status { bottom: max(16px,env(safe-area-inse
   .scene-confirm-bar .selection-actions { flex-shrink: 0; }
   .scene-confirm-bar .selection-summary { flex: 1 1 0; }
 }
+
+/* A rehearsal is organised around the conversation and its evidence. */
+.task-card { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; min-height: 214px; }
+.task-card button { margin: auto 0 0; }
+.task-tag, .scene-note { color: var(--muted); font-size: .875rem; }
+.task-card h2 { font: 700 clamp(22px,3vw,32px)/1.25 var(--display); }
+.example-entry { margin-block: 16px; }
+.task-setup > .field, .task-setup > .setup-details, .task-setup > .check { margin-top: 16px; }
+.task-goals { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; margin-block: 16px; }
+.task-goals button { padding: 16px 24px 16px 16px; }
+.natural-chat h1 { font-size: clamp(20px,4vw,28px); }
+.messages { display: grid; gap: 12px; padding: 16px 0; }
+.chat-bubble { width: fit-content; max-width: 84%; padding: 10px 16px; border-radius: 16px 16px 16px 4px; background: var(--white); border: 1px solid var(--line); overflow-wrap: anywhere; }
+.chat-bubble.is-user { justify-self: end; background: var(--blush); border-radius: 16px 16px 4px 16px; }
+.chat-bubble small { color: var(--muted); }
+.chat-bubble p { margin: 0; white-space: pre-wrap; }
+.scene-note { justify-self: center; max-width: 55ch; text-align: center; }
+.composer, .chat-paused, .coach-drawer, .evidence-item, .action-checklist { border: 1px solid var(--line); border-radius: 16px; background: var(--white); padding: 16px; }
+.composer textarea { width: 100%; margin: 8px 0; }
+.suggestion-list { display: flex; gap: 8px; flex-wrap: wrap; }
+.suggestion-list button { text-align: left; font-size: .875rem; font-weight: 400; }
+.coach-drawer { margin-top: 8px; background: var(--paper); }
+.evidence-summary { display: grid; gap: 12px; margin-block: 16px; }
+.evidence-item h3 { font-size: 1rem; line-height: 1.6; }
+.observation-chart li { display: flex; gap: 10px; align-items: center; }
+.evidence-page > details { margin-block: 16px; }
+.evidence-page textarea, .evidence-page input:not([type=checkbox]) { width: 100%; }
+@media(max-width:540px) {
+  .task-goals { grid-template-columns: minmax(0,1fr); }
+  .chat-bubble { max-width: 94%; }
+  .composer, .evidence-item { padding: 12px; }
+}

@@ -434,3 +434,31 @@ test('relationship stage is a current fact without inventing specific shared mem
  const f=await fixture(t);
  for(const stage of ['first','steady']) {const o=await f.request('/api/session',{config:{...config,stage},roleId:'R01'});const r=await f.request('/api/turn',{sessionId:o.data.sessionId,version:0,requestId:'stage-'+stage,text:'我们今天做点什么'});assert.equal(r.status,200);const prompt=f.calls.at(-1).body.messages[0].content;assert.match(prompt,/steady.*已稳定交往/);assert.match(prompt,/first.*上次我们/);assert.match(prompt,/不能.*反向.*stage|不得.*覆写.*阶段/);}
 });
+
+
+test("rehearsal replies carry editable drafts and report evidence must match both speakers",async t=>{
+  const f=await fixture(t,{respond:call=>{
+    const report=call.body.response_format.json_schema.schema.properties.findings;
+    const content=report?{findings:[
+      {dimension:"表达",turn:1,quote:"想坐外面",partnerQuote:"正好",observation:"你说清了偏好。",alternative:"外面凉快点，你方便吗？"},
+      {dimension:"接话",turn:2,quote:"我从未说过",partnerQuote:"正好",observation:"应被省略。",alternative:"无需输出"},
+    ]}:{reply:"正好，我也想吹吹风。",detail:"",actionId:null,suggestions:["那我们先看看外面。","拍照吧。"]};
+    return {body:{choices:[{finish_reason:"stop",message:{content:JSON.stringify(content)}}]}};
+  }});
+  const {data:session}=await f.request("/api/session",{config,roleId:"R01",task:{kind:"practice",goal:"说出偏好",duration:"short",style:"quiet"}});
+  let version=0;
+  for(let i=0;i<3;i++){
+    const result=await f.request("/api/turn",{sessionId:session.sessionId,requestId:"practice-"+i,version,text:"我想坐外面。"});
+    assert.equal(result.status,200);
+    assert.deepEqual(result.data.run.events.at(-1).suggestions,["那我们先看看外面。"]);
+    version=result.data.version;
+  }
+  await f.request("/api/control",{sessionId:session.sessionId,command:"end"});
+  const result=await f.request("/api/report",{sessionId:session.sessionId});
+  assert.equal(result.status,200);
+  assert.equal(result.data.findings.length,1);
+  assert.equal(result.data.findings[0].quote,"想坐外面");
+  const total=f.calls.length;
+  await f.request("/api/report",{sessionId:session.sessionId});
+  assert.equal(f.calls.length,total);
+});

@@ -73,14 +73,25 @@
   async function sendModel(payload) {
     if (!session || busy || run.phase !== "live") return;
     radar.before();
+    if(task)triedTurn=payload.text||"";
     const identity = JSON.stringify({...session, ...payload});
     if (!retryTurn || retryTurn.identity !== identity) retryTurn = {identity, requestId:crypto.randomUUID()};
     return modelRequest("/api/turn", {...session, requestId:retryTurn.requestId, ...payload}, () => {
       retryTurn = null;
-      utterance = "";
+      utterance = "";selectedDraft=-1;suggestionText="";coachOpen=false;triedTurn="";polish=null;
       if (run.phase === "ended") finish();
       else show("live");
     });
+  }
+  const goals=["刚坐下不知道说什么","聊成一问一答","想说不同意见","不知道怎么结束","想提出下次见面"];
+  let task=null, analysis=null, reportLoading=false, reportError="", coachOpen=false;
+  let polish=null, polishRequest=null;
+  let checklist={}, includeFull=false, selectedDraft=-1, suggestionText="", triedTurn="";
+  const unavailable="这里暂时无法自由聊天。请重试，或返回首页看一段固定示例。";
+  function newTask(kind) {
+    reset();
+    task={kind,goal:kind==="practice"?"":"自然开场",duration:kind==="practice"?"short":"full",style:"natural"};
+    show("taskSetup");
   }
   let screen;
   let config;
@@ -153,6 +164,7 @@
   function reset(next = "cover") {
     ++generation; retryTurn = null; busy = false; session = null; modelMode = false; utterance = "";
     preparation = window.DatingPreparation.create();
+    taskSceneDefault=true;primarySessionId=null;task=null;polish=null;polishRequest=null;analysis=null;reportLoading=false;reportError="";coachOpen=false;checklist={};includeFull=false;selectedDraft=-1;suggestionText="";triedTurn="";
     homeRecommendations = dealHomeScenes("全部");
     homeRerolling=false;roleLimit=12;partnerUndo=null;openBuilderGroups.clear();suspended=false;
     quickEntry = directPreparation = false;
@@ -239,23 +251,13 @@
   const methodCopy=custom=>custom?"按你的印象设定对象的相处方式。你可以选标签、锁定想保留的特征，其他留空。":"从现成角色里选一位。先看看对方的开场方式，再挑你想练的活动。";
   function cover() {
     if (suspended) return `<section class="panel suspended-view"><h1 tabindex="-1">本场已暂停</h1><p>你的进度还在。可以回来继续，或结束后去回看。</p><div class="buttons">${button("return-live","返回约会现场","primary")}${button("end-suspended","结束并回看")}</div></section>`;
-    const custom = homeMethod === "custom";
     return `<section class="cover home-page">
       <header class="home-heading"><h1 tabindex="-1">约会预演</h1><p class="home-deck">先模拟一场约会，再复盘自己的选择。</p></header>
       <div class="home-layout">
-        <section class="home-start">
-          <div class="start-panel"><h2>准备一场见面</h2><div class="segment" role="group" aria-label="使用方式">
-            <button type="button" data-method="roles" aria-pressed="${!custom}">从角色库挑人</button>
-            <button type="button" data-method="custom" aria-pressed="${custom}">自己捏人</button>
-          </div><p id="home-method-copy">${methodCopy(custom)}</p>
-          ${button(custom?"custom-entry":"quick",custom?"开始捏对象":"浏览角色库","primary")}<small class="start-note">选完对象后可以换场景、改偏好。</small></div>
-        </section>
-        <aside class="practice-slip" aria-labelledby="practice-slip-title">
-          <div class="slip-topline">${categoryIcon("户外")}<span>短练 · 公园散步</span></div>
-          <div class="slip-body"><h2 id="practice-slip-title">到点了，怎么自然收尾？</h2><blockquote>“我差不多十分钟后得去取个东西，今天咱们就先到这儿吧？”</blockquote><p>试着接住这句话，看看不同回应会把散场带向哪里。</p></div>
-          ${button("home-practice","开始这段练习 →","quiet")}
-        </aside>
+        <article class="start-panel task-card"><span class="task-tag">赴约前预演</span><h2>我快要去约会了</h2><p>带上你知道的情况，先练一遍想开口的那段。</p>${button("new-rehearsal","准备这次见面","primary")}</article>
+        <article class="practice-slip task-card"><span class="task-tag">约会能力练习</span><h2>我想练一个约会瞬间</h2><p>从冷场、接话、表达不同意见或告别开始。</p>${button("new-practice","挑一个想练的时刻")}</article>
       </div>
+      <details class="example-entry"><summary>先看看怎么练</summary><p>这段公园散步是固定示例，可点选体验。它不会分析你的约会能力。</p>${button("home-practice","看一段固定示例","quiet")}</details>
       <section class="home-scenes" aria-labelledby="home-scenes-title">
         <div class="section-head"><h2 id="home-scenes-title">探索场景</h2>${button("all-scenes","浏览全部场景 →","quiet")}</div>
         <div class="filter-bar">${categoryFilters("home",homeCategory)}<div id="home-refresh">${homeRefresh()}</div></div>
@@ -343,14 +345,41 @@
       ${categoryFilters("scene",sceneCatalogCategory)}
       <div id="catalog-grid" class="scene-grid">${catalogCards()}</div>${catalogBar()}</section>`;
   }
-  function journal() {
-    return `<section class="panel journal-page">${crumb("自查簿")}<h1 tabindex="-1">我的约会自查簿</h1><div id="radar-host"></div></section>`;
+  function taskSetup() {
+    if(!task)return cover();
+    const short=task.kind==="practice";
+    const selected=short?goals:["自然开场","找话题和接话","说出不同意见","商量时间地点与费用","自然收尾"];
+    return `<section class="panel task-setup">${crumb(short?"练一个瞬间":"赴约前预演")}<h1 tabindex="-1">${short?"今天想练哪一件事？":"这次见面，你想先练哪一段？"}</h1>
+      <div class="task-goals" role="group" aria-label="练习重点">${selected.map(goal=>`<button type="button" class="choice-card" data-task-goal="${esc(goal)}" aria-pressed="${task.goal===goal}">${esc(goal)}</button>`).join("")}</div>
+      <label class="field">自己的情况（选填）<input name="task-goal" value="${selected.includes(task.goal)?"":esc(task.goal)}" maxlength="160" placeholder="例如，结束前想说明我想自己回去"></label>
+      <label class="field">在哪见面<select name="task-scene">${option("","还没定，用模拟咖啡店开场",taskSceneDefault?"":config.scene)}${library.scenes.map(scene=>option(scene.id,esc(scene.name),taskSceneDefault?"":config.scene)).join("")}</select></label>
+      <details class="setup-details"><summary>更多安排</summary><div class="form-grid">
+      <label class="field">练习长度<select name="task-duration">${option("short","短练（建议6–8轮）",task.duration)}${option("full","完整（建议18–30轮）",task.duration)}</select></label>
+      <label class="field">对方的说话方式<select name="task-style">${Object.entries({natural:"自然日常",warm:"活泼",quiet:"慢热",direct:"直率"}).map(([key,label])=>option(key,label,task.style)).join("")}</select></label>
+      ${short?"":`<label class="field">你已确认的安排（只用于本场准备清单）<textarea name="task-plan" maxlength="240">${esc(checklist.plan||"")}</textarea></label>`}</div></details>
+      ${check("adult","我已年满18岁，知道这是虚构模拟",config.adult)}
+      <p class="subline">自由聊天会把本场必要设定和已发对话交给当前服务。建议使用称呼，省略联系方式和精确地址。</p>
+      <div class="buttons">${button("task-start",short?"开始自由练习":"挑一位角色","primary")}${short?"":button("custom-entry","自己捏人")}</div></section>`;
   }
-
+  let taskSceneDefault=true;
+  const recordKey="dating-rehearsals-v1";
+  function savedRecords(){
+    try{const parsed=JSON.parse(window.localStorage.getItem(recordKey)||"[]");return Array.isArray(parsed)?parsed:[];}
+    catch{return [];}
+  }
+  let recordTab=false;
+  function journal() {
+    return `<section class="panel journal-page">${crumb("练习记录")}<h1 tabindex="-1">练习记录</h1>
+      <div class="segment">${button("journal-practice","去练习",recordTab?"quiet":"")}${button("journal-records","我的记录",recordTab?"":"quiet")}</div>
+      ${recordTab?`<p class="subline">这里只显示你主动保存的练习摘要。完整对话请在结束时下载。</p><div class="record-stack">${savedRecords().map((item,index)=>`<article class="ticket"><p class="meta">${esc(item.date)} · ${esc(item.task.kind==="practice"?"能力练习":"赴约预演")}</p><h2>${esc(item.task.goal)}</h2><p>${esc(item.summary)}</p><div class="buttons"><button type="button" data-record-retry="${index}">再练一次</button><button type="button" data-record-delete="${index}" class="quiet">删除摘要</button></div></article>`).join("")||"<p>这里还没有保存的练习。先挑一个想练的时刻。</p>"}</div>`:`<h2>今天想练哪一件事？</h2><div class="task-goals">${goals.map(goal=>`<button type="button" class="choice-card" data-new-goal="${esc(goal)}">${esc(goal)}</button>`).join("")}</div><div class="buttons">${button("new-practice","写一个自己的情况","quiet")}${button("legacy-journal","查看旧版练习笔记","quiet")}</div>`}</section>`;
+  }
+  function legacyJournal() {
+    return `<section class="panel">${crumb("固定示例与旧版练习笔记","journal","练习记录")}<h1 tabindex="-1">固定示例与旧版练习笔记</h1><div id="radar-host"></div></section>`;
+  }
   function navigation() {
     const section = {cover:"home",roles:"roles",preparation:preparation.step===1?"roles":"all-scenes",sceneCatalog:"all-scenes",settings:"all-scenes",preferences:"all-scenes",invitation:"all-scenes",journal:"journal"}[screen];
     const inScene=busy||suspended;
-    const links=[["home","首页"],["roles","角色库"],["all-scenes","场景"],["journal","自查簿"]];
+    const links=[["home","首页"],["roles","角色库"],["all-scenes","场景"],["journal","练习记录"]];
     return `<nav class="page-nav" aria-label="网页导航"><span class="brand"><span aria-hidden="true">♡</span> Dating之神</span><div>
       ${screen==="live"?`<span class="nav-live-status">约会${run.phase==="paused"?"已暂停":"进行中"}</span>${button("leave-live","暂停并离开","quiet")}`:links.map(([id,label])=>`<button type="button" data-go="${id}" class="quiet${section===id?" nav-current":""}"${section===id?' aria-current="page"':""}${inScene?" disabled":""}>${label}</button>`).join("")}</div></nav>`;
   }
@@ -488,6 +517,7 @@
   }
 
   function live() {
+    if(task&&run.rehearsalTask)return conversationView();
     const role = engine.resolveRole ? engine.resolveRole(run) : engine.roleById(run.role);
     const scene = engine.resolveScene ? engine.resolveScene(run) : engine.sceneById(run.scene);
     const start = modelMode ? modelOpening : engine.opening(run);
@@ -525,6 +555,75 @@
     </section>`;
   }
 
+  function conversationView(){
+    const role=engine.resolveRole(run);
+    const paused=run.phase==="paused";
+    const event=run.events.at(-1);
+    const suggestions=event?.suggestions||[];
+    const stationChoices=run.pendingStation?engine.choices(run).filter(item=>["station-confirm","station-cancel"].includes(item.id)):
+      /(?:想|要不|可以|去不去|接下来|下一站).{0,18}(?:再去|换个地方|第二站|下一站|续摊)|(?:再去|第二站|下一站|续摊)/.test(event?.label||"") ? engine.choices(run).filter(item=>item.id.startsWith("station:")).slice(0,3):[];
+    const bubble=(who,text)=>`<div class="chat-bubble ${who==="你"?"is-user":""}"><small>${who}</small><p>${esc(text)}</p></div>`;
+    return `<section class="panel live-panel natural-chat"><header class="section-head"><div><p class="meta">${run.branchFrom===null?"约会预演":"从原场再练"} · ${run.events.length}回合</p><h1 tabindex="-1">${esc(role.name)} · ${esc(run.location)}</h1></div>${paused?button("resume","继续聊天"):button("pause","暂停","quiet")}</header>
+      <div class="messages" aria-label="本场对话">
+      ${modelOpening?.detail?`<p class="scene-note">${esc(modelOpening.detail)}</p>`:""}
+      ${modelOpening?.line?bubble("TA",modelOpening.line):""}
+      ${run.events.map(turn=>bubble("你",turn.label)+(turn.detail?`<p class="scene-note">${esc(turn.detail)}</p>`:"")+bubble("TA",turn.reply)).join("")}
+      ${busy&&triedTurn?bubble("你",triedTurn)+'<p role="status" class="scene-note">等TA回复…</p>':""}</div>
+      ${!paused&&stationChoices.length?`<details class="setup-details"><summary>${run.pendingStation?"确认是否换个地方":"如果你确实想换个地方"}</summary><div class="buttons">${stationChoices.map(item=>`<button type="button" data-confirm-action="${esc(item.id)}"${busy?" disabled":""}>${esc(item.label)}</button>`).join("")}</div></details>`:""}
+      ${paused?`<div class="chat-paused"><p>先停在这里。回来的时候会接上当前对话。</p>${button("leave-live","离开现场","quiet")}</div>`:
+      `<div class="composer"><div class="suggestion-list">${suggestions.map((line,index)=>`<button type="button" data-draft-index="${index}" aria-pressed="${selectedDraft===index}"${busy?" disabled":""}>${esc(line)}</button>`).join("")}</div>
+      <label class="field"><span class="sr-only">输入你想说的话</span><textarea name="utterance" placeholder="输入你想说的话…" maxlength="1200"${busy?" disabled":""}>${esc(utterance)}</textarea></label>
+      <div class="section-head">${button("hint","给我一点提示","quiet")}<div>${busy?button("cancel","取消等待","quiet"):""}<button type="button" data-go="send" class="primary"${busy||!utterance.trim()?" disabled":""}>发送</button></div></div>
+      ${coachOpen?`<aside class="coach-drawer"><h2>可以先接一下刚才那句</h2><p>挑一个具体细节，接着说自己的想法。也可以只说你现在想做什么。</p>${suggestions.length?`<button type="button" data-draft-index="0"${busy?" disabled":""}>试试这句：${esc(suggestions[0])}</button>`:""}
+        <p class="subline">「帮我顺一下」会把当前草稿交给服务，草稿不会发送给TA。</p>${button("polish",polishRequest?"正在整理…":"帮我顺一下","quiet")}
+        ${polish&&polish.source===utterance?`<p>可以试试：「${esc(polish.line)}」</p><div class="buttons">${button("apply-polish","换成这句")}${button("dismiss-polish","保留原文","quiet")}</div>`:""}</aside>`:""}</div>`}
+      <div class="buttons">${button("request-end","结束并查看报告","quiet")}${button("reset","删除本场","quiet danger")}</div></section>`;
+  }
+
+  function evidenceView(){
+    if(!original?.rehearsalTask)return cover();
+    const item=analysis?.findings?.[0];
+    return `<section class="panel report-panel evidence-page"><h1 tabindex="-1">本场复盘</h1>
+      ${report.evidenceReport(original,alternative,analysis,{...checklist,claimedAction:checklist.claimedAction||item?.alternative,pending:reportLoading,actions:true,canReplay:!alternative})}
+      ${reportError?`<p class="subline" role="status">${esc(reportError)}</p>${button("retry-report","重新整理分析")}`:""}
+      ${task.kind==="rehearsal"?`<details class="setup-details"><summary>编辑赴约清单</summary><div class="form-grid">${[["claimedAction","我想试的做法"],["question","我想确认的问题"],["fallback","如果计划变了"]].map(([key,label])=>`<label class="field">${label}<input name="checklist.${key}" maxlength="240" value="${esc(checklist[key]||(key==="claimedAction"?item?.alternative:"")||"")}"></label>`).join("")}${checklist.plan?`<p>你已确认的安排：${esc(checklist.plan)}</p>`:""}</div></details>`:""}
+      <details class="setup-details"><summary>我的便笺与分享卡</summary><label class="field">私人便笺（仅当勾选才随报告导出）<textarea name="note" maxlength="320">${esc(draft.note)}</textarea></label>
+      ${check("includeNote","下载时写入这条私人便笺",draft.includeNote)}
+      <label class="field">想分享的一句感受<input name="accepted" maxlength="96" value="${esc(draft.accepted)}"></label>
+      ${check("confirmed","我确认这句话可用来制作分享卡",draft.confirmed)}
+      ${button("download-card","下载分享卡（SVG）")}</details>
+      ${check("includeFull","下载时也包含完整对话",includeFull)}
+      <div class="buttons">${button("download-evidence","下载HTML回看","primary")}${button("save-evidence","保存本机摘要")}${button("retry-task","换个场景练","quiet")}${button("reset","删除本场","quiet danger")}</div></section>`;
+  }
+
+  async function loadReport(sessionId) {
+    if(reportLoading||!sessionId)return;
+    const snapshot=original;
+    reportLoading=true;reportError="";
+    show("evidenceView","",false);
+    try {
+      const value=await api("/api/report",{sessionId});
+      if(original===snapshot)analysis=report.validateAnalysis(snapshot,value);
+    } catch {
+      if(original===snapshot)reportError="暂时没整理出分析。原话仍可查看，也可以再试一次。";
+    } finally {
+      if(original===snapshot){
+        reportLoading=false;
+        if(screen==="evidenceView"){
+          const summary=evidenceView();
+          const template=document.createElement("template");
+          if(template.content){
+            template.innerHTML=summary;
+            const current=app.querySelector(".evidence-summary");
+            const next=template.content.querySelector(".evidence-summary");
+            if(current && next && !reportError)current.replaceWith(next);
+            else show("evidenceView","",false);
+          }else show("evidenceView","",false);
+        }
+      }
+    }
+  }
+  let primarySessionId=null;
   function review() {
     const event = original.events[draft.selected];
     const suggestion = report.choices(original, draft.selected);
@@ -620,7 +719,7 @@
     return window.DatingPreparation.render(preparation, library, {budgetFields, adultField, currentScene:config.scene, frame:step?frame:"", direct:directPreparation, sceneCards:step===2&&directPreparation?customScenePicker():"", flowBar:step===1||(step===2&&directPreparation)?prepBar():"", canUndo:Boolean(partnerUndo), issue:preparationIssue});
 
   }
-  const views = { preparation:preparationView, cover, roles:roleLibrary, sceneCatalog, journal, preferences, settings, invitation, live, review, final, practiceReview };
+  const views = {taskSetup, legacyJournal, evidenceView, preparation:preparationView, cover, roles:roleLibrary, sceneCatalog, journal, preferences, settings, invitation, live, review, final, practiceReview };
   function show(next, message = "", focus = true, route = {}) {
     if (window.history && !route.fromHistory) {
       const state = {datingGod:true, screen:next, ...(next==="preparation"?{step:preparation.step}:{})};
@@ -651,7 +750,7 @@
         if (item?.nodeType) item.open=true;
       }
     }
-    if (modelMode && next === "live") {
+    if (modelMode && next === "live" && !run.rehearsalTask) {
       const last = run.events.at(-1);
       const line = app.querySelector("#model-line");
       const detail = app.querySelector("#model-detail");
@@ -660,9 +759,12 @@
       const input = app.querySelector('[name="utterance"]');
       if (input) input.value = utterance;
     }
-    if (!liveUpdate) radar.mount(next === "journal");
+    if (!liveUpdate && next!=="evidenceView" && !(task && next==="live")) radar.mount(next === "legacyJournal");
     status.textContent = message;
     refreshCardPreview();
+    if(next==="live"&&task&&liveUpdate&&typeof app.querySelector(".composer")?.scrollIntoView==="function"){
+      app.querySelector(".composer").scrollIntoView({block:"nearest"});
+    }
     if (focus && !liveUpdate) app.querySelector("h1")?.focus({preventScroll:false});
     else if (liveUpdate && focus) app.querySelector(".line")?.focus({preventScroll:true});
   }
@@ -671,6 +773,7 @@
     const next = event.state?.datingGod ? event.state.screen : null;
     if (suspended && next!=="cover") { show("cover","",true,{replace:true});return; }
     if (!next || !Object.hasOwn(views,next)) return;
+    if(next==="evidenceView"&&!original?.rehearsalTask){show("cover","",true,{replace:true});return;}
     if ((next==="invitation"&&!candidates.length) || (["live","review","final","practiceReview"].includes(next)&&!run)) {
       show("cover", "", true, {replace:true});
       return;
@@ -705,6 +808,13 @@
   }
   function practiceReview(){return `<section><h1>这一小段，先练到这里</h1><p>独立练习只记录本次言行，不据此认定已经改好。</p>${run.events.map(e=>`<p>你：${esc(e.label)}</p><p>TA：${esc(e.reply)}</p>`).join("")}<div id="radar-host"></div>${button("save-home","结束并保存已完成摘要")}${button("reset","结束并清空这场")}</section>`;}
   function finish() {
+    if(task&&run.rehearsalTask){
+      if(run.branchFrom===null){original=run;primarySessionId=session?.sessionId;}
+      else alternative=run;
+      show("evidenceView");
+      if(!analysis&&original.events.length>=3)loadReport(primarySessionId);
+      return;
+    }
     if(run.practiceRuleId){show("practiceReview");return;}
     if (run.branchFrom === null) original = run;
     else alternative = run;
@@ -714,7 +824,8 @@
   function startDate(role, runConfig=config) {
     radar.begin(null);
     if (modelMode) return modelRequest("/api/session", {
-      config:{radarEnabled:true,...(config.practiceRuleId?{practiceRuleId:config.practiceRuleId}:{}),...Object.fromEntries(["adult","scene","player","presentation","avoid","seed","mode","traits","interest","surprise","stage","intent","exclusivity","budget","timeBudget","alcohol","experience","diet","partnerSpec","sceneSpec","preparation"].map(key=>[key,runConfig[key]]))},
+      ...(task?{task}:{}),
+      config:{radarEnabled:!task,...(config.practiceRuleId?{practiceRuleId:config.practiceRuleId}:{}),...Object.fromEntries(["adult","scene","player","presentation","avoid","seed","mode","traits","interest","surprise","stage","intent","exclusivity","budget","timeBudget","alcohol","experience","diet","partnerSpec","sceneSpec","preparation"].map(key=>[key,runConfig[key]]))},
       roleId:role.id,
     }, value => {
       radar.begin(value.sessionId);
@@ -806,6 +917,21 @@
       const path=name.slice(5);
       preparation.locks=checked?[...new Set([...preparation.locks,path])]:preparation.locks.filter(x=>x!==path);
       refreshBuilderSummary();
+      return;
+    }
+    if(name==="task-goal"){task.goal=value;setPressed("task-goal",value);return;}
+    if(name==="task-scene"){taskSceneDefault=!value;config.scene=value||"S02";return;}
+    if(name==="task-duration"){task.duration=value;return;}
+    if(name==="task-style"){task.style=value;return;}
+    if(name==="task-plan"){checklist.plan=value;return;}
+    if(name==="includeFull"){includeFull=checked;return;}
+    if(name?.startsWith("checklist.")){checklist[name.slice(10)]=value;return;}
+    if(name==="utterance"&&task) {
+      if(value!==utterance)retryTurn=null;
+      utterance=value;selectedDraft=-1;
+      setPressed("draft-index",null);
+      const send=app.querySelector('[data-go="send"]');
+      if(send?.nodeType)send.disabled=!value.trim()||busy;
       return;
     }
     if (name === "utterance") { if (utterance !== value) retryTurn = null; utterance = value; return; }
@@ -956,7 +1082,20 @@
     if (!updateRegion("#catalog-bar",catalogBar(),true)) show("sceneCatalog","",false);
   }
 
-  let pendingDialog = "";
+  let pendingDialog = "", pendingSuggestion=null, pendingRecord=-1, pendingAction=null;
+  function useSuggestion(index,line) {
+    selectedDraft=index;suggestionText=utterance=line;retryTurn=null;
+    show("live","",false);
+    const field=app.querySelector('[name="utterance"]');
+    field?.focus();
+    field?.setSelectionRange?.(line.length,line.length);
+  }
+  app.addEventListener("keydown",event=>{
+    if(task && event.target.name==="utterance" && !event.isComposing && event.key==="Enter" && (event.ctrlKey||event.metaKey)){
+      event.preventDefault();
+      if(utterance.trim()&&!busy)sendModel({text:utterance.trim()});
+    }
+  });
   function openFlowDialog(kind, opener) {
     if (pendingDialog) return;
     pendingDialog=kind;
@@ -965,7 +1104,13 @@
     dialog.className="flow-dialog";
     dialog.setAttribute("aria-labelledby","flow-dialog-title");
     const leaving=kind==="leave";
-    dialog.innerHTML=`<h2 id="flow-dialog-title">${leaving?"怎么离开现场？":"清空这场约会？"}</h2>
+    const extra={
+      draft:["换成这句？","你已经写了一些内容。替换后会用新的草稿。","replace-draft","替换草稿"],
+      end:["现在结束并生成报告？","报告会用已提交的本场对话。对话较少时也可以查看原话。","finish-session","结束并看报告"],
+      action:["确认这个选择？",pendingAction?.label||"","submit-action","确认"],
+      record:["删除这条摘要？","仅删除当前浏览器中的这条摘要。","confirm-record-delete","确认删除"],
+    }[kind];
+    dialog.innerHTML=extra?`<h2 id="flow-dialog-title">${extra[0]}</h2><p>${esc(extra[1])}</p><div class="buttons">${button("close-flow-dialog","返回","quiet")}${button(extra[2],extra[3],"primary")}</div>`:`<h2 id="flow-dialog-title">${leaving?"怎么离开现场？":"清空这场约会？"}</h2>
       <p>${leaving?"可以暂停后从首页回来，也可以直接结束并查看复盘。":"这场的原局、重演和关联自查摘要将被移除。已经下载的文件会保留。"}</p>
       <div class="buttons">${button("close-flow-dialog","返回","quiet")}${leaving?`${button("end-from-dialog","结束并回看")}${button("pause-and-leave","暂停并离开","primary")}`:button("confirm-reset","确认清空","primary danger-fill")}</div>`;
     app.append(dialog);
@@ -1069,6 +1214,24 @@
       refreshPlan();
       return;
     }
+    if(target.dataset.taskGoal){task.goal=target.dataset.taskGoal;show("taskSetup","",false);return;}
+    if(target.dataset.newGoal){newTask("practice");task.goal=target.dataset.newGoal;show("taskSetup");return;}
+    if(target.dataset.draftIndex!==undefined && !busy){
+      const index=Number(target.dataset.draftIndex);const line=run.events.at(-1)?.suggestions?.[index];
+      if(!line)return;
+      if(utterance.trim()&&utterance!==suggestionText&&utterance!==line){pendingSuggestion={index,line};openFlowDialog("draft",target);return;}
+      return useSuggestion(index,line);
+    }
+    if(target.dataset.confirmAction&&!busy){
+      pendingAction=engine.choices(run).find(item=>item.id===target.dataset.confirmAction);
+      if(pendingAction)openFlowDialog("action",target);
+      return;
+    }
+    if(target.dataset.evidenceReplay!==undefined&&original&&!alternative){
+      draft.selected=Number(target.dataset.evidenceReplay);session.sessionId=primarySessionId;return control("replay",{index:draft.selected});
+    }
+    if(target.dataset.recordRetry!==undefined){const item=savedRecords()[Number(target.dataset.recordRetry)];if(item){newTask(item.task.kind);task={...item.task};config.scene=item.scene;taskSceneDefault=false;show("taskSetup");}return;}
+    if(target.dataset.recordDelete!==undefined){pendingRecord=Number(target.dataset.recordDelete);openFlowDialog("record",target);return;}
     if (action) {
       if (modelMode) return sendModel({actionId:action});
       radar.before();
@@ -1147,6 +1310,9 @@
           const roles = engine.match(next);
           if (!roles.length) throw Error("请调整对象与活动的预算或时间。");
           const useModel = go !== "prep-offline" && await detectModel();
+          if(go==="prep-auto"&&!task)task={kind:"rehearsal",goal:preparation.focus||"自然交流",duration:"full",style:"natural"};
+          if (task && go!=="prep-offline" && !useModel) throw Error(unavailable);
+          if (go==="prep-offline")task=null;
           if (go === "prep-model" && !useModel) throw Error("自由输入暂不可用，可以用点选开始。");
           if (screen !== "preparation") return;
           modelMode = useModel;
@@ -1164,6 +1330,89 @@
       return;
     }
     switch (go) {
+      case "new-rehearsal":newTask("rehearsal");break;
+      case "new-practice":newTask("practice");break;
+      case "task-start": {
+        if(!task?.goal.trim()){status.textContent="先选一项想练的事。";break;}
+        if(!checkAdult())break;
+        if(!await detectModel()){status.textContent=unavailable;break;}
+        if(screen!=="taskSetup")break;
+        if(task.kind==="rehearsal"){quickEntry=true;sceneFirst=true;show("roles");break;}
+        const role=engine.match(config)[0]||engine.match({...config,mode:"spark"})[0];
+        if(!role){status.textContent="这里没有合适的角色，请换个场景。";break;}
+        if(role.modes&&!role.modes.includes(config.mode))config.mode="spark";
+        modelMode=true;
+        return startDate(role);
+      }
+      case "journal-practice":recordTab=false;show("journal");break;
+      case "journal-records":recordTab=true;show("journal");break;
+      case "legacy-journal":show("legacyJournal");break;
+      case "request-end":openFlowDialog("end",target);break;
+      case "finish-session":
+        if(pendingDialog!=="end")break;
+        closeFlowDialog();return control("end");
+      case "replace-draft": {
+        if(pendingDialog!=="draft")break;
+        const next=pendingSuggestion;closeFlowDialog();
+        if(next)return useSuggestion(next.index,next.line);
+        break;
+      }
+      case "submit-action": {
+        if(pendingDialog!=="action"||busy)break;
+        const action=pendingAction;closeFlowDialog();
+        if(action&&engine.choices(run).some(item=>item.id===action.id))return sendModel({actionId:action.id});
+        break;
+      }
+      case "confirm-record-delete":
+        if(pendingDialog==="record"){
+          try{const history=savedRecords();history.splice(pendingRecord,1);window.localStorage.setItem(recordKey,JSON.stringify(history));closeFlowDialog();show("journal","已删除这条摘要。");}
+          catch{status.textContent="无法删除本机摘要。";}
+        }
+        break;
+      case "retry-task": {
+        const previous={...task};
+        newTask(previous.kind);task=previous;show("taskSetup");break;
+      }
+      case "polish": {
+        if(polishRequest||busy||!session||!utterance.trim()){
+          if(!utterance.trim())status.textContent="先写一点想说的话，再试试。";
+          break;
+        }
+        const source=utterance;
+        const active={...session,text:source};
+        polishRequest=active;
+        show("live","",false);
+        try{
+          const result=await api("/api/polish",active);
+          if(polishRequest===active&&screen==="live"&&utterance===source&&session.version===active.version)polish={source,line:result.line};
+        }catch{
+          if(polishRequest===active)status.textContent="暂时没能整理草稿，原文还在。";
+        }finally{
+          if(polishRequest===active){
+            polishRequest=null;
+            if(screen==="live"&&!busy)show("live",status.textContent,false);
+          }
+        }
+        break;
+      }
+      case "apply-polish":
+        if(polish&&polish.source===utterance&&!busy){const line=polish.line;polish=null;return useSuggestion(-1,line);}
+        break;
+      case "dismiss-polish":polish=null;show("live","",false);break;
+      case "retry-report":return loadReport(primarySessionId);
+      case "download-evidence":
+        if(original)download(report.evidenceHtml(original,alternative,analysis,{...checklist,claimedAction:checklist.claimedAction||analysis?.findings?.[0]?.alternative,full:includeFull,includeNote:draft.includeNote,note:draft.note}),"本场复盘.html","text/html;charset=utf-8");
+        break;
+      case "save-evidence":
+        if(!original?.rehearsalTask)break;
+        try {
+          const id=original.runId;
+          const history=savedRecords().filter(item=>item.id!==id);
+          history.unshift({id,date:new Date().toLocaleDateString(),task:original.rehearsalTask,scene:original.initialScene||original.scene,summary:analysis?.findings?.[0]?.observation||`${original.events.length}回合练习`});
+          window.localStorage.setItem(recordKey,JSON.stringify(history.slice(0,50)));
+          status.textContent="已保存本机摘要。";
+        } catch { status.textContent="无法保存本机摘要，可以下载回看。"; }
+        break;
       case "home":
         if (screen !== "live" && !busy) show("cover");
         break;
@@ -1245,7 +1494,7 @@
         break;
       }
       case "home-practice":
-        show("journal");
+        task=null;show("legacyJournal");
         return radar.startScenario("natural-close-v1");
       case "journal":
         if (screen !== "live" && !busy) show("journal");
@@ -1288,7 +1537,7 @@
       case "radar-coach": return radar.coach(false);
       case "radar-preflight": return radar.coach(true);
       case "save-home": if(await radar.save()){reset(); status.textContent="已保存本场自查摘要。";} break;
-      case "send": if (utterance.trim()) return sendModel({text:utterance}); break;
+      case "send": if (utterance.trim()) return sendModel({text:utterance.trim()}); break;
       case "cancel": return control("cancel");
       case "lower-mode": {
         const index = Object.keys(modes).indexOf(run.mode || config.mode);
@@ -1329,7 +1578,9 @@
           show("preferences","条件已变更，请重新查看见面便笺。");
           break;
         }
-        if (quickEntry) modelMode = await detectModel();
+        if(quickEntry&&!task)task={kind:"rehearsal",goal:"自然交流",duration:"full",style:"natural"};
+        if (quickEntry || task) modelMode = await detectModel();
+        if(task&&!modelMode){status.textContent=unavailable;break;}
         if (screen !== "invitation") break;
         return startDate(current);
       case "close-flow-dialog": closeFlowDialog(); break;
@@ -1361,6 +1612,7 @@
       case "pause": if (modelMode) return control("pause"); run = engine.pause(run); show("live"); break;
       case "resume": if (modelMode) return control("resume"); run = engine.resume(run); show("live"); break;
       case "hint":
+        if(task){coachOpen=!coachOpen;show("live","",false);app.querySelector('[data-go="hint"]')?.focus({preventScroll:true});break;}
         hint = !hint;
         show("live", "", false);
         app.querySelector('[data-go="hint"]').focus();
@@ -1394,8 +1646,9 @@
         download(report.html(original, alternative, exportDraft()), "散场之后.html", "text/html;charset=utf-8");
         break;
       case "download-card": {
-        const image = report.card(original, exportDraft(), alternative);
+        const image = report.card(original, {...exportDraft(), ...(task&&original.events.length&&draft.selected===null?{selected:0}:{})}, alternative);
         if (image) download(image, "个人 Dating 卡.svg", "image/svg+xml;charset=utf-8");
+        else if(task)status.textContent="请先填写一句自己的感受并确认，避免包含姓名、联系方式或引用台词。";
         break;
       }
       case "reset":

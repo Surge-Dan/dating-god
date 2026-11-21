@@ -96,7 +96,44 @@ ${note ? `<text font-size="22" fill="#671f35" font-family="sans-serif">${wrap(no
 </svg>`;
   }
 
-  const report = { choices, claim, experiment, html, card };
+  const dimensions=["接话","表达","协商","尊重意愿","收尾"];
+  function validateAnalysis(run,value) {
+    const findings=[];
+    const seen=new Set();
+    for(const item of (Array.isArray(value?.findings)?value.findings:[]).slice(0,24)){
+      if(!item||!dimensions.includes(item.dimension)||!Number.isInteger(item.turn))continue;
+      const event=run.events[item.turn-1];
+      if(!event||event.inputType==="action"||!["quote","partnerQuote","observation","alternative"].every(key=>typeof item[key]==="string"&&item[key].trim()&&item[key].length<=260))continue;
+      if(!event.label?.includes(item.quote)||!event.reply?.includes(item.partnerQuote)||seen.has(item.turn))continue;
+      seen.add(item.turn);
+      findings.push({turn:item.turn,dimension:item.dimension,quote:item.quote,partnerQuote:item.partnerQuote,observation:item.observation,alternative:item.alternative});
+    }
+    return {findings:findings.slice(0,run.rehearsalTask?.duration==="short"?2:4)};
+  }
+
+  function evidenceReport(run,branch,value,draft={}) {
+    const {findings}=validateAnalysis(run,value);
+    const selected=run.events[draft.selected];
+    const scenes=engine.resolveScene(run);
+    const task=run.rehearsalTask;
+    const snippets=findings.map(item=>`<article class="evidence-item"><p class="meta">第${item.turn}回合 · ${escape(item.dimension)}</p><h3>${escape(item.observation)}</h3><details><summary>看当时怎么聊</summary><p>你：${escape(item.quote)}</p><p>TA：${escape(item.partnerQuote)}</p></details><p>可以试着说「${escape(item.alternative)}」</p>${draft.actions&&draft.canReplay!==false?`<button class="quiet" type="button" data-evidence-replay="${item.turn-1}">从这句再练</button>`:""}</article>`).join("");
+    const rows=dimensions.map(name=>({name,count:findings.filter(item=>item.dimension===name).length})).filter(item=>item.count);
+    return `<section class="evidence-summary"><p>${escape(task.goal)} · ${escape(scenes.name)} · ${run.events.length}回合</p>
+      ${snippets||`<p>${run.events.length<3?"这场可观察的对话还比较少。可以回看原话，或再练一小段。":draft.pending?"正在整理可以回看的关键时刻。":"暂时没有可核对的分析。可以先看原话。"} </p>`}
+      ${rows.length&&task.duration!=="short"?`<details class="observation-chart"><summary>本场观察 · ${findings.length}条有原话的发现</summary><ul>${rows.map(item=>`<li><span>${item.name}</span><meter min="0" max="${findings.length}" value="${item.count}" aria-label="${item.name}">${item.count}</meter><span>${item.count}条</span></li>`).join("")}</ul><p>其余维度本场未充分观察。条数只表示报告覆盖范围。</p></details>`:""}
+      ${task.kind==="rehearsal"?`<section class="action-checklist"><h2>赴约前准备</h2><p>按这次模拟整理，真实安排请与对方确认。</p>${draft.plan?`<p><strong>你填的已确认安排</strong>　${escape(draft.plan)}</p>`:""}
+        ${[["claimedAction","我想试的做法"],["question","我想确认的问题"],["fallback","如果计划变了"]].map(([key,label])=>`<p><strong>${label}</strong>　${escape(draft[key]||"待填写")}</p>`).join("")}</section>`:""}
+      ${branch?.phase==="ended"?`<section><h2>同一刻的两种说法</h2><p>起点：第${branch.branchFrom+1}回合</p><p>原场：${escape(run.events[branch.branchFrom]?.label||"")} · ${escape(run.events[branch.branchFrom]?.reply||"")}</p><p>重演：${escape(branch.events[branch.branchFrom]?.label||"还没有新发言")} · ${escape(branch.events[branch.branchFrom]?.reply||"")}</p></section>`:""}
+      ${(draft.full||draft.actions)&&run.events.length?`<details><summary>完整对话</summary><ol>${timeline(run.events)}</ol></details>`:""}
+      ${selected&&draft.actions?`<p>已选第${draft.selected+1}回合</p>`:""}
+      ${draft.includeNote&&draft.note?`<section><h2>私人便笺</h2><p>${escape(draft.note)}</p></section>`:""}
+      </section>`;
+  }
+  function evidenceHtml(run,branch,analysis,draft) {
+    return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>本场复盘</title><style>body{font:16px/1.7 system-ui;color:#2b2320;background:#faf5ef;max-width:760px;margin:auto;padding:24px;overflow-wrap:anywhere}h1,h2{color:#8e2a44}article,details,.action-checklist{background:white;border:1px solid #eae0d6;border-radius:16px;padding:16px;margin:12px 0}summary{cursor:pointer}meter{margin:0 8px}</style><h1>本场复盘</h1>${evidenceReport(run,branch,analysis,draft)}</html>`;
+  }
+
+  const report = { choices, claim, experiment, html, card, validateAnalysis, evidenceReport, evidenceHtml };
   if (typeof module !== "undefined") module.exports = report;
   else window.DatingReport = report;
 })();

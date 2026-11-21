@@ -63,6 +63,8 @@ async function startServer(options = {}) {
         if(url.pathname==='/api/radar/delete')return json(res,200,core.radarDelete(input));
         if(url.pathname==='/api/radar/preflight')return json(res,200,core.radarPreflight(input));
         if(url.pathname==='/api/radar/coach')return json(res,200,core.radarCoach(input));
+        if (url.pathname === '/api/polish') return json(res, 200, await core.polish(input, disconnected.signal));
+        if (url.pathname === '/api/report') return json(res, 200, await core.report(input, disconnected.signal));
         if (url.pathname === '/api/turn') return json(res, 200, await core.turn(input, disconnected.signal));
         if (url.pathname === '/api/control') {
           const result = core.control(input);

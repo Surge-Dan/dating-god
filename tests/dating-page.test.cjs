@@ -101,8 +101,8 @@ test("recommended scene is replaceable before opening and the role library start
   const page = openPage();
   const go = id => page.click({go:id});
   assert.match(page.view.innerHTML, /先模拟一场约会/);
-  assert.match(page.view.innerHTML, /自己捏人/);
-  assert.match(page.view.innerHTML, /practice-slip/);
+  assert.match(page.view.innerHTML, /我快要去约会了/);
+  assert.match(page.view.innerHTML, /看一段固定示例/);
   const group=()=>[...page.view.innerHTML.matchAll(/data-home-scene="([^"]+)"/g)].map(match=>match[1]);
   let previous=group();
   for(let i=0;i<10;i++){
@@ -142,7 +142,7 @@ test("recommended scene is replaceable before opening and the role library start
   await go("match");
   assert.match(page.view.innerHTML, /林澈/);
   await go("meet");
-  assert.match(page.view.innerHTML, /林澈 · 书店咖啡门口/);
+  assert.match(page.status.textContent, /暂时无法自由聊天/);
   assert.doesNotMatch(page.view.innerHTML, /name="utterance"/);
 });
 
@@ -165,7 +165,7 @@ test("scene catalog and journal use task-specific navigation and immediate pract
   assert.match(page.view.innerHTML,/data-scene-choice="A08" aria-pressed="true"/);
   go("use-scene");
   assert.match(page.view.innerHTML, /角色库/);
-  go("journal");
+  go("legacy-journal");
   assert.match(page.radarHost.innerHTML, /data-radar="journal-tab"/);
   assert.match(page.radarHost.innerHTML, /data-radar="practice-group-select"/);
   page.click({radar:"journal-tab",id:"records"});
@@ -175,7 +175,7 @@ test("scene catalog and journal use task-specific navigation and immediate pract
 
 test("journal deletion shows its scope and can be cancelled before removing records", async () => {
   const page = openPage();
-  await page.click({go:"journal"});
+  await page.click({go:"legacy-journal"});
   await new Promise(resolve=>setImmediate(resolve));
   page.click({radar:"clear"});
   await new Promise(resolve=>setImmediate(resolve));
@@ -408,7 +408,7 @@ test("offline blocked photo produces a private short card and honors immersion t
  await page.click({radar:"toggle",id:""});assert.match(page.radarHost.innerHTML,/class="radar-card"/);
 });
 test("home groups practice rules and completes exactly three independent rounds",async()=>{
- const page=openPage();await page.click({go:"journal"});await new Promise(resolve=>setImmediate(resolve));
+ const page=openPage();await page.click({go:"legacy-journal"});await new Promise(resolve=>setImmediate(resolve));
  assert.match(page.radarHost.innerHTML,/分支情景/);assert.match(page.radarHost.innerHTML,/data-radar="practice-group-select"/);
  page.element("radar-practice-rule","D04-01");await page.click({radar:"practice-chosen",id:""});
  assert.match(page.radarHost.innerHTML,/独立微练习/);
@@ -418,7 +418,7 @@ test("home groups practice rules and completes exactly three independent rounds"
 });
 
 test('journal starts a consequential natural-ending scenario and supports replay',async()=>{
- const page=openPage();await page.click({go:'journal'});await new Promise(resolve=>setImmediate(resolve));
+ const page=openPage();await page.click({go:'legacy-journal'});await new Promise(resolve=>setImmediate(resolve));
  assert.match(page.radarHost.innerHTML,/自然收尾/);
  await page.click({radar:'practice-scenario',id:'natural-close-v1'});
  assert.match(page.radarHost.innerHTML,/十分钟后/);
@@ -434,7 +434,7 @@ test('journal starts a consequential natural-ending scenario and supports replay
 });
 
 test('scenario practice remains available until the user enables local saving',async()=>{
- const page=openPage();await page.click({go:'journal'});await new Promise(resolve=>setImmediate(resolve));
+ const page=openPage();await page.click({go:'legacy-journal'});await new Promise(resolve=>setImmediate(resolve));
  await page.click({radar:'practice-scenario',id:'natural-close-v1'});
  await page.click({radar:'practice-choice',id:'accept'});
  await page.click({radar:'practice-choice',id:'close-warmly'});
@@ -453,7 +453,7 @@ test('preparation entry advances through assumptions and confirmation without re
 
 test('custom and randomized locked partners enter real perler and tennis scenes and finish',async()=>{for(const template of ['perler','tennis']){const page=openPage();const go=id=>page.click({go:id});await go('prepare');page.input('prep.brief','练习共同活动');await go('prep-next');page.input('partner.appearance.hairLength','long');page.input('lock.appearance.hairLength',true);page.input('partner.interaction.expression','reserved');await go('prep-random');assert.match(page.view.innerHTML,/<option value="long" selected>/);page.input('partner.interaction.expression','outgoing');await go('prep-next');page.input('prep.template',template);page.input('prep.place','周末活动店');await go('prep-next');page.input('adult',true);await go('prep-offline');assert.equal(page.status.textContent,'');assert.match(page.view.innerHTML,/暂停/);assert.match(page.view.innerHTML,/周末活动店/);await go('end');assert.match(page.view.innerHTML,/回看|散场|带走/);}});
 
-test('preparation config persists without conversation and can be deleted independently',async()=>{const stored=new Map();const page=openPage({window:{localStorage:{setItem:(k,v)=>stored.set(k,v),getItem:k=>stored.get(k),removeItem:k=>stored.delete(k)}}});await page.click({go:'prepare'});page.input('prep.brief','周末准备');await page.click({go:'prep-save'});const raw=[...stored.values()][0];assert.match(raw,/周末准备/);assert.ok(!/events|transcript|messages/.test(raw));await page.click({go:'prep-exit'});assert.match(page.view.innerHTML,/自己捏人/);await page.click({go:'prepare'});await page.click({go:'prep-delete'});assert.equal(stored.size,0);});
+test('preparation config persists without conversation and can be deleted independently',async()=>{const stored=new Map();const page=openPage({window:{localStorage:{setItem:(k,v)=>stored.set(k,v),getItem:k=>stored.get(k),removeItem:k=>stored.delete(k)}}});await page.click({go:'prepare'});page.input('prep.brief','周末准备');await page.click({go:'prep-save'});const raw=[...stored.values()][0];assert.match(raw,/周末准备/);assert.ok(!/events|transcript|messages/.test(raw));await page.click({go:'prep-exit'});assert.match(page.view.innerHTML,/我快要去约会了/);await page.click({go:'prepare'});await page.click({go:'prep-delete'});assert.equal(stored.size,0);});
 
 test('existing role presets stay within preparation confirmation and reach the date',async()=>{const page=openPage();const go=id=>page.click({go:id});await go('prepare');await go('prep-next');await go('prep-existing');assert.match(page.view.innerHTML,/现成人物预设/);await go('prep-next');await go('prep-next');assert.match(page.view.innerHTML,/本次预演卡/);page.input('adult',true);await go('prep-offline');assert.equal(page.status.textContent,'');assert.match(page.view.innerHTML,/暂停/);await go('end');page.input('review-prep.claimedAction','先问对方有没有兴趣');await go('final');assert.match(page.view.innerHTML,/赴约准备|这场/);});
 
@@ -471,5 +471,49 @@ test("custom entry keeps the object draft and can start a built-in scene with no
   assert.match(page.view.innerHTML, /公园散步/);
   page.input("adult",true);
   await go("prep-auto");
+  assert.match(page.view.innerHTML,/暂时无法自由聊天/);
+  await go("prep-offline");
   assert.match(page.view.innerHTML, /小棠 · 公园公共东门/);
+});
+
+
+test("dynamic short practice sends only confirmed text and opens an evidence report", async()=>{
+  const calls=[];
+  const rawConfig={adult:true,scene:"S02",player:"unspecified",presentation:"unspecified",mode:"spark",seed:7};
+  const engine=require("../dating-god/assets/engine.js");
+  let run=engine.createRun(rawConfig,"R01");
+  const page=openPage({window:{location:{protocol:"http:"}},fetch:async(path,request)=>{
+    const body=request.body&&JSON.parse(request.body);
+    calls.push({path,body});
+    const json=(value)=>({ok:true,json:async()=>value});
+    if(path==="/api/config")return json({available:true});
+    if(path==="/api/session"){run.rehearsalTask=body.task;return json({sessionId:"short",version:0,run,opening:{line:"今天走哪边？",detail:"入口"}});}
+    if(path==="/api/turn"){
+      run={...run,events:[...run.events,{label:body.text,reply:"好，我想走树荫多的那边。",suggestions:["我们走一会儿？"]}]};
+      return json({sessionId:"short",version:run.events.length,run});
+    }
+    if(path==="/api/control"){run={...run,phase:"ended"};return json({sessionId:"short",version:4,run});}
+    if(path==="/api/report")return json({findings:[{dimension:"表达",turn:1,quote:"我想走",partnerQuote:"树荫",observation:"你说出了自己的路线偏好。",alternative:"我想走一段树荫路，你呢？"}]});
+    throw Error(path);
+  }});
+  await page.click({go:"new-practice"});
+  await page.click({taskGoal:"想说不同意见"});
+  page.input("adult",true);
+  await page.click({go:"task-start"});
+  assert.match(page.view.innerHTML,/今天走哪边/);
+  page.input("utterance","我想走左边。");
+  await page.click({go:"send"});
+  await page.click({draftIndex:"0"});
+  assert.equal(calls.filter(call=>call.path==="/api/turn").length,1);
+  page.input("utterance","我们往左边走一会儿？");
+  await page.click({go:"send"});
+  page.input("utterance","那走到路口就折返。");
+  await page.click({go:"send"});
+  assert.equal(calls.filter(call=>call.path==="/api/turn")[1].body.text,"我们往左边走一会儿？");
+  await page.click({go:"request-end"});
+  await page.click({go:"finish-session"});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.match(page.view.innerHTML,/你说出了自己的路线偏好/);
+  await page.click({go:"download-evidence"});
+  assert.match(await page.downloads[0].data.text(),/我想走一段树荫路/);
 });
