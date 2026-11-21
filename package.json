@@ -2,12 +2,12 @@
   "name": "dating-god-quality",
   "private": true,
   "scripts": {
-    "test": "node --test tests",
+    "test": "node qa/run-unit.cjs",
     "test:e2e": "playwright test && node qa/browser-coverage.cjs",
     "test:features": "cucumber-js qa/features --require qa/steps.cjs",
     "test:mutation": "stryker run",
     "check": "node qa/check.cjs",
-    "test:coverage": "c8 --all --include=dating-god/scripts/** --include=dating-god/assets/engine.js --include=dating-god/assets/report.js --check-coverage --lines=85 --branches=75 node --test tests"
+    "test:coverage": "c8 --all --include=dating-god/scripts/** --include=dating-god/assets/engine.js --include=dating-god/assets/report.js --check-coverage --lines=85 --branches=75 node qa/run-unit.cjs"
   },
   "devDependencies": {
     "@playwright/test": "1.65.1",
