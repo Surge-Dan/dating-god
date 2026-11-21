@@ -7,7 +7,7 @@ const { createDialogueCore, LiveError } = require('./dialogue-core.cjs');
 
 const ASSETS = path.resolve(__dirname, '../assets');
 const STATIC = new Map([
-  ...['partner-model.js','preparation-scenes.js','preparation-ui.js','radar-rules.js','radar-core.js','radar-store.js','practice-scenarios.js','radar-ui.js'].map(file=>['/'+file,[file,'text/javascript; charset=utf-8']]),
+  ...['icons.js','partner-model.js','preparation-scenes.js','preparation-ui.js','radar-rules.js','radar-core.js','radar-store.js','practice-scenarios.js','radar-ui.js'].map(file=>['/'+file,[file,'text/javascript; charset=utf-8']]),
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/index.html', ['index.html', 'text/html; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
@@ -17,7 +17,6 @@ const STATIC = new Map([
   ['/dialogue-data.js', ['dialogue-data.js', 'text/javascript; charset=utf-8']],
   ['/report.js', ['report.js', 'text/javascript; charset=utf-8']],
   ['/style.css', ['style.css', 'text/css; charset=utf-8']],
-  ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
 ]);
 
 function json(res, status, value) {

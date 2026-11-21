@@ -152,7 +152,6 @@
   let sceneCatalogCategory = "全部";
   let sceneCatalogSource = "";
   let catalogFromPlan = false;
-  let homeMethod = "roles";
   let homeCategory = "全部";
   let roleGender = "";
   let roleTrait = "";
@@ -209,7 +208,6 @@
     sceneCatalogSelected = null;
     sceneCatalogCategory = "全部";
     sceneCatalogSource="";catalogFromPlan=false;
-    homeMethod = "roles";
     homeCategory = settingsCategory = customCategory = "全部";
     roleGender = roleTrait = planIssue = preparationIssue = "";
     confirming = sceneFirst = false;
@@ -240,28 +238,12 @@
   const check = (name, label, checked, value = "") =>
     `<label class="check"><input type="checkbox" name="${name}" value="${value}"${checked ? " checked" : ""}> <span>${label}</span></label>`;
 
-  const icon = (name) => ({
-    people:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 20v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 18.5V20m6-9a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm6-6a3.5 3.5 0 0 1 0 6.8m1 3.2a3.5 3.5 0 0 1 3 3.5V20"/></svg>',
-    edit:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5 5 5M4 20l4.2-.8L19 8.4a2.1 2.1 0 0 0-3-3L5.2 16.2 4 20Z"/><path d="M4 20h16"/></svg>',
-    map:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10c0 5-8 11-8 11S4 15 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2.5"/></svg>',
-    note:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5zM8 8h8M8 12h8m-8 4h5"/><path d="m16 3 3 3"/></svg>',
-    refresh:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.5 9a7 7 0 0 1 11.8-2L20 12M4 12l2.7 5a7 7 0 0 0 11.8-2"/></svg>',
-  })[name] || "";
+  const icon = name => window.DatingIcons?.[name] || "";
 
   const tones = {"吃喝":"food","文娱":"culture","户外":"outdoors","游戏":"games","手作":"craft","运动":"sport","夜间":"night","逛街":"shops"};
-  const categoryPaths = {
-    food:'M4 4v5a3 3 0 0 0 6 0V4m-3 0v16M17 4c-2 2-3 5-3 8h5m0-8v16',
-    culture:'M4 5h6l2 2 2-2h6v13h-6l-2 2-2-2H4zM12 7v13',
-    outdoors:'m3 19 6-10 4 6 3-5 5 9H3ZM15 6h.01',
-    games:'M8 8h8a4 4 0 0 1 4 3l1 5a2 2 0 0 1-3 2l-3-3H9l-3 3a2 2 0 0 1-3-2l1-5a4 4 0 0 1 4-3Zm0 2v4m-2-2h4m5-1h.01m3 2h.01',
-    craft:'m4 20 2-6L17 3l4 4-11 11-6 2Zm10-14 4 4M6 14l4 4',
-    sport:'M4 20 9 15M9 15c-2-2-1-6 2-9s7-4 9-2 1 6-2 9-7 4-9 2Zm2-6 4 4m-1-7 4 4',
-    night:'M20 15A8 8 0 0 1 9 4a8 8 0 1 0 11 11ZM17 5v4m-2-2h4',
-    shops:'M4 8h16l1 12H3L4 8Zm5 2V7a3 3 0 0 1 6 0v3',
-  };
   function categoryIcon(category) {
     const tone=tones[category]||"outdoors";
-    return `<span class="category-icon tone-${tone}" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="${categoryPaths[tone]}"/></svg></span>`;
+    return `<span class="category-icon tone-${tone}" aria-hidden="true">${icon(tone)}</span>`;
   }
   function categoryFilters(kind, selected, categories=Object.keys(tones)) {
     return `<div class="filter-chips" role="group" aria-label="场景分类">${["全部",...categories].map(category=>`<button type="button" data-${kind}-category="${category}" aria-pressed="${selected===category}">${category}</button>`).join("")}</div>`;
@@ -282,7 +264,6 @@
     const count=byCategory(homeCategory).length;
     return `<button type="button" data-go="reroll" class="quiet refresh-button"${count<2?" disabled":""}>${icon("refresh")}${count>1&&count<=4?"换个顺序":"换一组推荐"}</button>${count===1?'<small class="subline">此分类只有1个场景</small>':""}`;
   }
-  const methodCopy=custom=>custom?"按你的印象设定对象的相处方式。你可以选标签、锁定想保留的特征，其他留空。":"从现成角色里选一位。先看看对方的开场方式，再挑你想练的活动。";
   function cover() {
     if (suspended) return `<section class="panel suspended-view"><h1 tabindex="-1">本场已暂停</h1><p>你的进度还在。可以回来继续，或结束后去回看。</p><div class="buttons">${button("return-live","返回约会现场","primary")}${button("end-suspended","结束并回看")}</div></section>`;
     return `<section class="cover home-page">
@@ -1199,23 +1180,9 @@
     if (event.target.closest("button")?.dataset.radar) return radar.handle(event);
     const target = event.target.closest("button");
     if (!target) return;
-    const {go,action,turn,select,scene,role,sceneChoice,sceneCategory,homeScene,homeCategory:category,settingsCategory:planCategory,customCategory:prepCategory,customScene,method}=target.dataset;
+    const {go,action,turn,select,scene,role,sceneChoice,sceneCategory,homeScene,homeCategory:category,settingsCategory:planCategory,customCategory:prepCategory,customScene}=target.dataset;
     if (busy && screen !== "live") return;
     if (suspended && !["return-live","end-suspended"].includes(go)) return;
-    if (method) {
-      homeMethod=method;
-      const custom=method==="custom";
-      setPressed("method",method);
-      const copy=app.querySelector("#home-method-copy");
-      const cta=app.querySelector(".start-panel .primary");
-      if (copy?.nodeType && cta?.nodeType) {
-        copy.textContent=methodCopy(custom);
-        cta.dataset.go=custom?"custom-entry":"quick";
-        cta.textContent=custom?"开始捏对象":"浏览角色库";
-      } else show("cover","",false);
-      app.querySelector(`[data-method="${homeMethod}"]`)?.focus({preventScroll:true});
-      return;
-    }
     if (category && category!==homeCategory) {
       homeCategory=category;
       homeRecommendations=dealHomeScenes(category,homeRecommendations);
@@ -1433,6 +1400,10 @@
         if(busy||!task)break;
         const message=!task.goal.trim()?"先选一项想练的事，或写一句自己的情况。":!config.adult?"请先确认已年满18岁。":"";
         if(message){status.textContent=message;const box=app.querySelector("#task-error");if(box)box.textContent=message;app.querySelector(task.goal.trim()?'[name="adult"]':'[name="task-goal"]')?.focus();break;}
+        if(task.kind==="rehearsal"){
+          if(go==="task-custom"){directPreparation=true;preparation.step=1;show("preparation");break;}
+          quickEntry=true;sceneFirst=true;show("roles");break;
+        }
         if(target.nodeType)target.disabled=true;
         const ready=await detectModel();
         if(target.isConnected)target.disabled=false;
@@ -1440,10 +1411,6 @@
         if(!ready){connectionFailed(go);break;}
         failedScreen=null;
         if(screen!=="taskSetup")break;
-        if(task.kind==="rehearsal"){
-          if(go==="task-custom"){directPreparation=true;preparation.step=1;show("preparation");break;}
-          quickEntry=true;sceneFirst=true;show("roles");break;
-        }
         const role=engine.match(config)[0]||engine.match({...config,mode:"spark"})[0];
         if(!role){status.textContent="这里没有合适的角色，请换个场景。";break;}
         if(role.modes&&!role.modes.includes(config.mode))config.mode="spark";

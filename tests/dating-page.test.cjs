@@ -567,3 +567,9 @@ test("saved reviews are discoverable only where there is something to review", a
   assert.match(page.view.innerHTML, /我说出了自己的想法/);
   assert.doesNotMatch(page.view.innerHTML, /去练习|我的记录|查看旧版练习笔记/);
 });
+
+ test("local preparation remains usable without a model connection", async()=>{
+ const page=openPage({window:{location:{protocol:'http:'}},fetch:async()=>({ok:true,json:async()=>({available:false})})});
+ await page.click({go:'new-rehearsal'});page.input('adult',true);await page.click({go:'task-custom'});
+ assert.match(page.view.innerHTML,/设置本场对象/);
+ });

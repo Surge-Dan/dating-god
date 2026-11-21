@@ -16,3 +16,8 @@ node_modules/
 __pycache__/
 .DS_Store
 Thumbs.db
+
+/test-results/
+/playwright-report/
+/coverage/
+/.stryker-tmp/

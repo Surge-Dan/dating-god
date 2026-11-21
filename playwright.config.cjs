@@ -1,0 +1,2 @@
+const {defineConfig}=require('@playwright/test');
+module.exports=defineConfig({testDir:'./qa/browser',outputDir:'.private/qa/results',workers:1,retries:0,use:{baseURL:'http://127.0.0.1:3798',trace:'retain-on-failure',screenshot:'only-on-failure'},webServer:{command:'node dating-god/scripts/live-server.cjs',url:'http://127.0.0.1:3798',env:{DATING_PORT:'3798',OPENAI_API_KEY:'',OPENAI_MODEL:''},reuseExistingServer:false}});
