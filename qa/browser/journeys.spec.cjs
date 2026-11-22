@@ -13,6 +13,31 @@ for(const width of [320,375,414,768,1024,1440])test(`practice controls remain re
  if(width===768)await page.screenshot({path:'.private/qa/practice-768.png',fullPage:true});
  const scan=await new AxeBuilder({page}).analyze();expect(scan.violations.filter(v=>['critical','serious'].includes(v.impact))).toEqual([]);
 });
+test('partner lock changes only its fill on pointer selection and keeps keyboard focus visible',async({page})=>{
+ await page.goto('/');
+ await page.locator('[data-go=new-rehearsal]').click();
+ await page.locator('[data-go=task-custom]').click();
+ const lock=page.getByRole('checkbox',{name:'随机时保留表达方式',exact:true});
+ const appearance=()=>lock.evaluate(input=>{
+   const style=getComputedStyle(input.parentElement);
+   return {fill:style.backgroundColor,border:style.borderColor,ink:style.color,outline:style.outlineStyle};
+ });
+ const initial=await appearance();
+ await lock.click();
+ await expect(lock).toBeChecked();
+ const selected=await appearance();
+ expect(selected.outline).toBe('none');
+ expect(selected.border).toBe(initial.border);
+ expect(selected.ink).toBe(initial.ink);
+ expect(selected.fill).not.toBe(initial.fill);
+ await lock.click();
+ await expect(lock).not.toBeChecked();
+ expect(await appearance()).toEqual(initial);
+ await page.keyboard.press('Shift+Tab');
+ await page.keyboard.press('Tab');
+ await expect(lock).toBeFocused();
+ expect((await appearance()).outline).toBe('solid');
+});
 test('offline example preserves the draft and requires explicit submission',async({page})=>{
  await page.goto('/');await page.locator('[data-go=new-practice]').click();await page.locator('[name=task-context]').fill('我想自己回家');await page.locator('[name=adult]').check();
  await page.locator('[data-go=offline-practice]').click();await expect(page.locator('.messages')).not.toContainText('TA · TA');

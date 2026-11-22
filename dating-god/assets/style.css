@@ -319,8 +319,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--rose); }
 .builder-fields select, .builder-fields input { width: 100%; min-width: 0; }
 .lock-control { position: relative; display: grid; place-items: center; width: 44px; height: 44px; border: 1px solid var(--border-control); border-radius: 10px; color: var(--muted); cursor: pointer; }
 .lock-control input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
-.lock-control:has(input:checked) { color: var(--wine); border-color: var(--wine); background: var(--blush); }
-.lock-control:focus-within { outline: 2px solid var(--rose); outline-offset: 3px; }
+.lock-control:has(input:checked) { background: var(--blush); }
+.lock-control:has(input:focus-visible) { outline: 2px solid var(--rose); outline-offset: 3px; }
 .builder-extra { padding: 0 14px; background: var(--paper-light); }
 .builder-extra > summary { display: flex; align-items: center; gap: 10px; min-height: 48px; }
 .builder-extra summary span { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 13px; }
