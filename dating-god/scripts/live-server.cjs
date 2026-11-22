@@ -3,7 +3,8 @@
 const http = require('node:http');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { createDialogueCore, LiveError } = require('./dialogue-core.cjs');
+const { createHash } = require('node:crypto');
+const { createDialogueCore, LiveError, API_VERSION } = require('./dialogue-core.cjs');
 
 const ASSETS = path.resolve(__dirname, '../assets');
 const STATIC = new Map([
@@ -18,6 +19,22 @@ const STATIC = new Map([
   ['/report.js', ['report.js', 'text/javascript; charset=utf-8']],
   ['/style.css', ['style.css', 'text/css; charset=utf-8']],
 ]);
+
+async function verifyPreview(port) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw Error('端口无效，请检查DATING_PORT。');
+  const origin = `http://127.0.0.1:${port}`;
+  const request = route => fetch(`${origin}${route}`, {redirect:'error',signal:AbortSignal.timeout(2500)});
+  const response = await request('/api/config');
+  if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) throw Error('此端口没有返回Dating之神服务状态。');
+  const config = await response.json();
+  if (config.apiVersion !== API_VERSION || !['configured','unconfigured'].includes(config.status)) throw Error('此端口的服务版本不匹配。');
+  const files = await Promise.all([...STATIC.entries()].filter(([route])=>route!=='/index.html').map(async ([route,[file,mime]])=>{
+    const [asset,local] = await Promise.all([request(route),fs.readFile(path.join(ASSETS,file))]);
+    if (!asset.ok || asset.headers.get('content-type')!==mime || !local.equals(Buffer.from(await asset.arrayBuffer()))) throw Error(`预览资源与当前文件不符（${file}）。`);
+    return local;
+  }));
+  return {origin,apiVersion:API_VERSION,assets:files.length,fingerprint:createHash('sha256').update(Buffer.concat(files)).digest('hex').slice(0,12),modelConfigured:config.status==='configured'};
+}
 
 function json(res, status, value) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
@@ -93,10 +110,22 @@ async function startServer(options = {}) {
 }
 
 if (require.main === module) {
-  startServer().then(app => {
-    process.stdout.write(`Dating之神本地服务：${app.url}\n仅支持OpenAI Chat Completions；请明确配置OPENAI_API_KEY和OPENAI_MODEL。启动不会调用模型。\n`);
+  const port = Number(process.env.DATING_PORT || 3781);
+  const printPreview = value => process.stdout.write(`Dating之神预览 ${value.origin} · API v${value.apiVersion} · ${value.assets}项静态资源 · ${value.fingerprint} · ${value.modelConfigured?'模型已配置，生成待验证':'模型未配置'}\n`);
+  if(process.argv.includes('--verify'))verifyPreview(port).then(printPreview).catch(error=>{
+    process.stderr.write(`预览校验失败：${error instanceof TypeError?'无法连接本地端口。':error.message}\n`);process.exitCode=1;
+  });
+  else startServer({port}).then(async app => {
+    try { printPreview(await verifyPreview(app.server.address().port)); }
+    catch(error){await app.close();throw error;}
     for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { app.close().then(() => process.exit(0)); });
-  }).catch(error => { process.stderr.write(`无法启动本地服务：${error.code === 'EADDRINUSE' ? '端口已被占用，请设置DATING_PORT。' : '请检查Node版本和端口配置。'}\n`); process.exitCode = 1; });
+  }).catch(async error => {
+    if(error.code==='EADDRINUSE'){
+      try { printPreview(await verifyPreview(port));process.stderr.write('已有同版本预览占用端口，本次未启动新进程。\n'); }
+      catch { process.stderr.write('端口已被其他服务或旧版预览占用。请改用DATING_PORT。\n'); }
+    }else process.stderr.write('无法启动或校验本地服务。请检查Node版本和端口配置。\n');
+    process.exitCode=1;
+  });
 }
 
-module.exports = { startServer };
+module.exports = { startServer, verifyPreview };

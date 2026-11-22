@@ -30,12 +30,20 @@
     }
     return value;
   }
+  async function readConnection() {
+    if (!/^https?:$/.test(window.location?.protocol || "")) return "local-service";
+    try { return (await api("/api/config")).available ? "configured" : "unconfigured"; }
+    catch { return "unreachable"; }
+  }
   async function detectModel() {
-    if (!/^https?:$/.test(window.location?.protocol || "")) return false;
     busy = true;
     const ticket = ++generation;
-    try { return Boolean((await api("/api/config")).available); }
-    catch { return false; }
+    try {
+      const connection = await readConnection();
+      if (ticket !== generation) return false;
+      homeConnection = connection;
+      return connection === "configured";
+    }
     finally { if (ticket === generation) busy = false; }
   }
   async function fetchModel(path, body) {
@@ -44,8 +52,12 @@
       if(task&&path==="/api/turn"&&(!error.code||error.code==="CONFLICT")){
         try {
           const latest=await api("/api/control",{sessionId:body.sessionId,command:"status",requestId:body.requestId});
-          if(latest.committed&&latest.version===body.version+1)return latest;
-        } catch { /* The original error and unsent draft remain available for retry. */ }
+          if(latest.committed)return latest;
+          error.deliveryUncertain=Boolean(latest.pending);
+        } catch(statusError) {
+          if(statusError.code==="SESSION_NOT_FOUND")throw statusError;
+          error.deliveryUncertain=true;
+        }
       }
       throw error;
     }
@@ -70,31 +82,55 @@
       busy = false;
       if(task&&path==="/api/session"){
         const entry={taskSetup:"task-start",preparation:"prep-auto",invitation:"meet"}[screen];
-        if(entry)return connectionFailed(entry);
+        if(entry)return connectionFailed(entry,error);
       }
-      if (screen === "live") show("live", error.message);
+      if (screen === "live"&&task) {
+        if(error.deliveryUncertain&&retryTurn)retryTurn.uncertain=true;
+        liveError=error.code==="SESSION_NOT_FOUND"?"本场已失效。你可以查看已经确认的对话，或保留设置重新开始。":retryTurn?.uncertain?"暂时没能确认这句是否送达。核对之后再发送。":error.message;
+        if(error.code==="SESSION_NOT_FOUND")sessionExpired=true;
+        show("live","",false);
+      } else if (screen === "live") show("live", error.message);
       else status.textContent = error.message;
     }
   }
   async function control(command, extra = {}) {
     ++generation;
-    retryTurn = null;
     busy = false;
     if (!session) return;
-    return modelRequest("/api/control", {sessionId:session.sessionId, command, ...extra}, () => {
-      if (command === "end") finish();
-      else show("live");
+    const pending=retryTurn;
+    const requestId=task&&pending&&["cancel","pause","end"].includes(command)?pending.requestId:null;
+    return modelRequest("/api/control", {sessionId:session.sessionId, command, ...extra,...(requestId?{requestId}:{})}, value => {
+      if(value.committed&&pending?.text===utterance.trim())utterance="";
+      retryTurn=null;triedTurn="";liveError="";
+      if (command === "end"||run.phase==="ended"&&command!=="replay") finish();
+      else {
+        if(command==="replay"){
+          modelOpening=value.opening||originalOpening;
+          utterance="";triedTurn="";polish=null;coachOpen=false;selectedDraft=-1;suggestionText="";
+        }
+        show("live",command==="cancel"?(value.committed?"这句已发出，回应已同步。":"已取消等待，未发出的草稿还在。"):"");
+      }
     });
   }
   async function sendModel(payload) {
     if (!session || busy || run.phase !== "live") return;
+    if(retryTurn?.uncertain){
+      const pending=retryTurn;
+      return modelRequest("/api/control",{sessionId:session.sessionId,command:"status",requestId:pending.requestId},value=>{
+        if(value.committed&&pending.text===utterance.trim())utterance="";
+        if(!value.pending){retryTurn=null;triedTurn="";liveError="";}
+        if(run.phase==="ended")finish();else show("live",value.committed?"这句已发出，回应已同步。":value.pending?"这句仍在处理。":"这句没有发出，可以重新发送。");
+      });
+    }
+    liveError="";
     radar.before();
     if(task)triedTurn=payload.text||"";
     const identity = JSON.stringify({...session, ...payload});
-    if (!retryTurn || retryTurn.identity !== identity) retryTurn = {identity, requestId:crypto.randomUUID()};
+    if (!retryTurn || retryTurn.identity !== identity) retryTurn = {identity, requestId:crypto.randomUUID(),text:payload.text};
     return modelRequest("/api/turn", {...session, requestId:retryTurn.requestId, ...payload}, () => {
       retryTurn = null;
-      utterance = "";selectedDraft=-1;suggestionText="";coachOpen=false;triedTurn="";polish=null;
+      if(payload.text)utterance="";
+      selectedDraft=-1;suggestionText="";coachOpen=false;triedTurn="";polish=null;
       if (run.phase === "ended") finish();
       else show("live");
     });
@@ -103,20 +139,28 @@
   let task=null, analysis=null, reportLoading=false, reportError="", coachOpen=false;
   let polish=null, polishRequest=null;
   let checklist={}, includeFull=false, selectedDraft=-1, suggestionText="", triedTurn="";
-  const unavailable="自由聊天暂时不可用。你的设置还在。";
   const goalNotes=["找一句不生硬的开场。","接住对方刚说的一个细节。","说出自己的偏好，给对方留个选择。","对方要走时，把话自然收住。","表达兴趣，也给彼此留点空间。"];
   const goalActivities=["A01","A08","A02","A08","A05"];
+  const moments=["opening","follow-up","disagree","close","next-date"];
+  const momentNotes={opening:"刚见面，话题还没展开。", "follow-up":"对方会先说一件具体的事。", disagree:"对方会提出一个可商量的选择。", close:"见面快结束了，你可以决定怎样道别。", "next-date":"见面快结束了，你可以表达是否想再见。"};
   let failedEntry=null;
   let failedScreen=null, homeConnection=null, legacyNotes=false, legacyError=false, offline=null, reportScroll=0;
+  let connectionError="", picker=null, homeSceneId=null, appliedPartner=null, appliedScene=null, sceneDraft=null;
+  let pendingKind="", setupNumbers={}, modeExplicit=false;
+  let liveError="", sessionExpired=false, pendingReplay=null;
   function connectionOptions(home=false){
-    if(home?homeConnection!==false:failedScreen!==screen)return "";
-    return `<aside class="connection-note"><strong>自由聊天暂时不可用</strong><p>${home?"可以先练一小段，带走一句收尾的话。":"你的设置还在。可以重试，或先练一段收尾。"}</p><div class="buttons">${home?"":button("retry-connection","重试连接","quiet")}${button("offline-practice","先练一段收尾")}</div></aside>`;
+    if(homeConnection===null||homeConnection==="configured"&&failedScreen!==screen)return "";
+    const missing=homeConnection==="unconfigured", local=homeConnection==="local-service";
+    const title=failedScreen===screen&&connectionError?connectionError:missing?"自由聊天尚未连接":local?"自由聊天需要本地服务":"暂时连不到本地服务";
+    return `<aside class="connection-note" data-state="${homeConnection==="unreachable"?"error":""}" tabindex="-1"><strong>${esc(title)}</strong><p>${home?"你可以先浏览人物和场景。":"本场的设置还在。"}收尾示例使用预设选项。</p><div class="buttons connection-actions">${button("connection-help","查看连接方式","quiet")}${!home&&failedScreen===screen&&!missing&&!local?button("retry-connection","重试连接","quiet"):""}${button("offline-practice","看收尾演练示例")}</div></aside>`;
   }
-  function connectionFailed(entry){
+  function connectionFailed(entry,error){
     failedEntry=entry;
     failedScreen=screen;
-    show(screen,unavailable,false);
-    app.querySelector(".connection-note button")?.focus();
+    connectionError=error?.code==="NOT_CONFIGURED"?"自由聊天尚未连接":error?.message||"";
+    if(error?.code==="NOT_CONFIGURED")homeConnection="unconfigured";
+    show(screen,"",false);
+    app.querySelector(".connection-note")?.focus();
   }
   function newTask(kind) {
     if(suspended||screen==="live"||busy)return;
@@ -125,6 +169,65 @@
     task={kind,goal:kind==="practice"?"":"自然开场",duration:kind==="practice"?"short":"full",style:"natural"};
     recommendTaskScene();
     show("taskSetup");
+  }
+
+  function requestTask(kind, opener) {
+    if(task&&!run&&task.kind!==kind&&(preferredRoleId||appliedPartner||!taskSceneDefault||task.context||checklist.plan||task.kind==="practice"&&task.goal)){
+      pendingKind=kind;
+      openFlowDialog("switch-task",opener);
+      return;
+    }
+    newTask(kind);
+  }
+
+  function ensureTask() {
+    if (!task || run) newTask("rehearsal");
+  }
+
+  function chooseForTask(sceneId) {
+    ensureTask();
+    config.scene=sceneId;
+    appliedScene=null;
+    taskSceneDefault=false;
+    planIssue="";
+  }
+
+  function openPicker(kind, opener) {
+    const nested=Boolean(picker);
+    picker={kind,origin:picker?.origin||screen,opener:picker?.opener||opener};
+    if(kind==="role"){
+      selectedRoleId=preferredRoleId;
+      roleDetailOpen=false;
+    } else if(kind==="scene") {
+      sceneCatalogSelected=config.scene;
+      sceneCatalogSource="本场已选";
+      sceneCatalogCategory="全部";
+    } else if(kind==="partner") {
+      preparation=appliedPartner?JSON.parse(JSON.stringify(appliedPartner)):window.DatingPreparation.create();
+      preparation.step=1;
+      directPreparation=true;
+      partnerUndo=null;
+      activeBuilderGroup="";
+    } else if(kind==="custom-scene") {
+      sceneDraft=appliedScene?{...appliedScene}:{schemaVersion:1,template:sceneCatalogSelected||config.scene,place:"",activity:"walk",accessConfirmed:false};
+    }
+    const destination={role:"roles",scene:"sceneCatalog",partner:"preparation","custom-scene":"sceneEditor"}[kind];
+    show(destination,"",true,{replace:nested});
+  }
+
+  let focusAfterReturn="";
+  function returnFromPicker(apply=false) {
+    const previous=picker;
+    if(!previous)return;
+    picker=null;
+    const destination=apply?"taskSetup":previous.origin;
+    if(destination===previous.origin&&window.history?.state?.picker){
+      focusAfterReturn=previous.opener;
+      window.history.back();
+    } else {
+      show(destination,"",true,{replace:true});
+      app.querySelector(`[data-go="${previous.opener}"]`)?.focus();
+    }
   }
   let screen;
   let config;
@@ -197,7 +300,8 @@
     ++generation; retryTurn = null; busy = false; session = null; modelMode = false; utterance = "";
     preparation = window.DatingPreparation.create();
     failedScreen=null;offline=null;taskSceneDefault=true;primarySessionId=null;task=null;polish=null;polishRequest=null;analysis=null;reportLoading=false;reportError="";coachOpen=false;checklist={};includeFull=false;selectedDraft=-1;suggestionText="";triedTurn="";
-    homeRecommendations = dealHomeScenes("全部");
+    picker=null;appliedPartner=null;appliedScene=null;sceneDraft=null;connectionError="";liveError="";sessionExpired=false;pendingReplay=null;setupNumbers={};pendingKind="";modeExplicit=false;
+    if(!homeRecommendations.length)homeRecommendations=dealHomeScenes(homeCategory);
     homeRerolling=false;roleLimit=12;partnerUndo=null;activeBuilderGroup="";suspended=false;
     quickEntry = directPreparation = false;
     importText = "";
@@ -208,7 +312,7 @@
     sceneCatalogSelected = null;
     sceneCatalogCategory = "全部";
     sceneCatalogSource="";catalogFromPlan=false;
-    homeCategory = settingsCategory = customCategory = "全部";
+    settingsCategory = customCategory = "全部";
     roleGender = roleTrait = planIssue = preparationIssue = "";
     confirming = sceneFirst = false;
     config = {
@@ -258,7 +362,7 @@
       <small>${scene.metrics||sceneFacts(scene)}${issue?` <span class="scene-warning">${esc(issue)}</span>`:""}</small></button>`;
   }
   function homeSceneCards() {
-    return homeRecommendations.map(scene=>sceneCard(scene,"home-scene",{selected:false})).join("");
+    return homeRecommendations.map(scene=>sceneCard(scene,"home-scene",{selected:scene.id===homeSceneId})).join("");
   }
   function homeRefresh() {
     const count=byCategory(homeCategory).length;
@@ -268,6 +372,7 @@
     if (suspended) return `<section class="panel suspended-view"><h1 tabindex="-1">本场已暂停</h1><p>你的进度还在。可以回来继续，或结束后去回看。</p><div class="buttons">${button("return-live","返回约会现场","primary")}${button("end-suspended","结束并回看")}</div></section>`;
     return `<section class="cover home-page">
       <header class="home-heading"><h1 tabindex="-1">约会预演</h1><p class="home-deck">先模拟一场约会，再复盘自己的选择。</p></header>
+      ${task&&!run?`<aside class="session-resume"><strong>还有一场在准备</strong><p>${esc(task.goal||task.context||"尚未选练习重点")} · ${esc(setupScene()?.name||"场景待选")}</p>${button("continue-setup","继续准备","primary")}</aside>`:""}
       <div class="home-layout">
         <article class="start-panel task-card"><span class="task-tag">赴约前预演</span><h2>我快要去约会了</h2><p>按你的情况选对象和地点，练完带走一张赴约清单。</p>${button("new-rehearsal","准备这次见面","primary")}</article>
         <article class="practice-slip task-card"><span class="task-tag">约会能力练习</span><h2>我想练一个约会瞬间</h2><p>比如TA说还有事，你怎么收尾？练完带走一句可以重试的话。</p>${button("new-practice","挑一个想练的时刻")}</article>
@@ -277,10 +382,19 @@
       <section class="home-scenes" aria-labelledby="home-scenes-title">
         <div class="section-head"><h2 id="home-scenes-title">探索场景</h2>${button("all-scenes","浏览全部场景 →","quiet")}</div>
         <div class="filter-bar">${categoryFilters("home",homeCategory)}<div id="home-refresh">${homeRefresh()}</div></div>
-        <p id="recommendation-update" class="sr-only" aria-live="polite"></p><div class="home-scene-list" id="home-scene-grid">${homeSceneCards()}</div>
+        <div id="home-scene-preview">${homeScenePreview()}</div><p id="recommendation-update" class="sr-only" aria-live="polite"></p><div class="home-scene-list" id="home-scene-grid">${homeSceneCards()}</div>
       </section>
       <p class="home-note">场景与人物为虚构设定。成年确认后可以开始预演。</p>
     </section>`;
+  }
+
+  function scenePreview(scene, action="", label="") {
+    if (!scene) return "";
+    return `<aside class="catalog-preview ticket"><h2 tabindex="-1">${esc(scene.name)}</h2><p>${esc(scene.description||scene.intro)}</p><p class="meta">${esc(sceneFacts(scene))}</p>${action?button(action,label,"primary"):""}</aside>`;
+  }
+
+  function homeScenePreview(){
+    return scenePreview(engine.sceneById(homeSceneId),"use-home-scene","用这个场景准备一场");
   }
 
   const roleLabels = {woman:"女性",man:"男性",nonbinary:"非二元",unspecified:"未指定"};
@@ -309,31 +423,31 @@
   }
   function roleLibrary() {
     const roles=filteredRoles();
-    if (!roles.some(role=>role.id===selectedRoleId)) {
-      selectedRoleId=null;
-      roleDetailOpen=false;
-    }
-    const selected=roles.find(role=>role.id===selectedRoleId);
+    const selected=engine.roleById(selectedRoleId);
     const visible=roles.slice(0,roleLimit);
-    if (selected && !visible.includes(selected)) visible[visible.length-1]=selected;
+    if (selected && roles.includes(selected) && !visible.includes(selected)) visible[visible.length-1]=selected;
+    const choosing=picker?.kind==="role";
+    const title=choosing?"为本场选对象":"角色库";
+    const chooseLabel=choosing?"使用这个对象":"用这个角色准备一场";
+    const outside=selected&&!roles.includes(selected);
     const badge = selected && engine.sceneById(selected.scenes[0])?.category;
-    const supportsScene = role => sceneFirst && role.scenes.includes(config.scene);
+    const supportsScene = role => role.scenes.includes(appliedScene?window.DatingPreparationScenes.compatibilitySceneId(appliedScene.template):config.scene);
     return `<section class="panel role-library${selected?" has-role-choice":""}">
-      ${crumb("角色库")}<div class="section-head"><h1 tabindex="-1">角色库</h1>${button("random-role","按条件随机匹配","quiet")}</div>
-      ${roleTabs(false)}${steps(0)}
-      ${sceneFirst?`<div class="context-strip">${categoryIcon(engine.sceneById(config.scene).category)}<span>已选场景 <strong>${esc(engine.sceneById(config.scene).name)}</strong></span>${button("change-catalog-scene","更换场景","quiet")}</div>`:""}
+      ${choosing?crumb(title,"cancel-picker","返回本场"):crumb(title)}<div class="section-head"><h1 tabindex="-1">${title}</h1>${button("random-role","按条件推荐一位","quiet")}</div>
+      ${roleTabs(false)}
+      ${choosing?`<div class="context-strip"><span>本场地点 <strong>${esc(setupScene()?.name||"尚未选择")}</strong></span></div>`:""}
       <div class="library-toolbar"><label class="search-field"><span class="sr-only">搜索角色</span><input name="role-search" type="text" inputmode="search" value="${esc(roleSearch)}" placeholder="搜名字、兴趣或相处方式" autocomplete="off"></label>
       <label><span class="sr-only">按性别筛选</span><select name="role-gender">${[["","全部性别"],["woman","女性"],["man","男性"]].map(([key,label])=>option(key,label,roleGender)).join("")}</select></label>
       <label><span class="sr-only">按相处节奏筛选</span><select name="role-trait">${[["","所有相处节奏"],...Object.entries(library.traits)].map(([key,label])=>option(key,esc(label),roleTrait)).join("")}</select></label></div>
       <div class="library-layout"><section class="role-results"><div class="section-head"><h2>现成角色</h2><span class="library-count" aria-live="polite">${roles.length}位角色</span></div>
       <div class="role-list">${roles.length?visible.map(role=>`<button type="button" data-role="${esc(role.id)}" class="role-row choice-card" aria-pressed="${selected?.id===role.id}">${avatar(role)}
-        <span class="role-row-copy"><strong>${esc(role.name)}${sceneFirst?`<b class="compat-tag${supportsScene(role)?"":" not-compatible"}">${supportsScene(role)?"适配已选场景":"场景不适配"}</b>`:""}</strong><small>${role.age}岁 · ${esc(roleLabels[role.presentation])} · ${esc(role.traits.slice(0,2).map(id=>library.traits[id]).join("、"))}</small><span>${esc(role.bio)}</span></span></button>`).join(""):`<div class="empty-filter">${icon("people")}<h3>没有符合筛选的角色</h3><p>试试少选一个条件，或按你的印象捏人。</p>${button("clear-role-search","清空筛选","primary")} ${button("custom-entry","自己捏人","quiet")}</div>`}</div>${roles.length>roleLimit?button("more-roles",`加载更多角色（还有${roles.length-roleLimit}位）`,"more-roles"):""}</section>
+        <span class="role-row-copy"><strong>${esc(role.name)}${choosing?`<b class="compat-tag${supportsScene(role)?"":" not-compatible"}">${supportsScene(role)?"适配本场":"场景不适配"}</b>`:""}</strong><small>${role.age}岁 · ${esc(roleLabels[role.presentation])} · ${esc(role.traits.slice(0,2).map(id=>library.traits[id]).join("、"))}</small><span>${esc(role.bio)}</span></span></button>`).join(""):`<div class="empty-filter">${icon("people")}<h3>没有符合筛选的角色</h3><p>试试少选一个条件，或按你的印象捏人。</p>${button("clear-role-search","清空筛选","primary")} ${button("custom-entry","自己捏人","quiet")}</div>`}</div>${roles.length>roleLimit?button("more-roles",`加载更多角色（还有${roles.length-roleLimit}位）`,"more-roles"):""}</section>
       ${selected?`<aside class="role-profile tone-${tones[badge]||"culture"} ${roleDetailOpen?"profile-open":""}" id="role-details">
         <div class="profile-top">${avatar(selected,true)}<div><h2 tabindex="-1">${esc(selected.name)}</h2><p>${selected.age}岁 · ${esc(roleLabels[selected.presentation])}</p></div></div>
         <div class="profile-body"><p>${esc(selected.bio)}</p><blockquote>“${esc(selected.greeting)}”</blockquote>
         <dl><dt>兴趣</dt><dd>${esc(selected.interests.map(id=>library.interests[id]).filter(Boolean).join("、"))}</dd><dt>常见场景</dt><dd>${esc(selected.scenes.map(id=>engine.sceneById(id)?.name).filter(Boolean).join("、"))}</dd><dt>适合模式</dt><dd>${esc((selected.modes||Object.keys(modes)).map(id=>modes[id]).join("、"))}</dd></dl></div>
-        ${button("choose-role","和TA预演","primary role-desktop-cta")}</aside>`:'<aside class="role-profile role-placeholder" id="role-details"><h2>先选一位角色</h2><p>点按角色卡，查看开场方式与适合的场景。</p></aside>'}</div>
-      ${selected?selectionBar("role-confirm-bar",selected.name,"","choose-role","和TA预演",{extra:button("role-list",roleDetailOpen?"收起档案":"查看档案","quiet")}):""}
+        </aside>`:'<aside class="role-profile role-placeholder" id="role-details"><h2>先选一位角色</h2><p>点按角色卡，查看开场方式与适合的场景。</p></aside>'}</div>
+      ${selected?selectionBar("role-confirm-bar",selected.name,outside?"当前筛选未显示":"","choose-role",chooseLabel,{extra:button("role-list",roleDetailOpen?"收起档案":"查看档案","quiet")}):""}
     </section>`;
   }
 
@@ -348,62 +462,118 @@
   function catalogBar() {
     const selected=engine.sceneById(sceneCatalogSelected);
     const outside=selected&&sceneCatalogCategory!=="全部"&&selected.category!==sceneCatalogCategory;
-    const issue=selected&&sceneIssue(selected);
+    const choosing=picker?.kind==="scene";
+    const issue=choosing&&selected&&sceneIssue(selected);
     return selectionBar("catalog-bar", selected?.name||"先选一个场景",
       selected?[outside?"在当前分类外":"",issue||sceneFacts(selected),sceneCatalogSource].filter(Boolean).join(" · "):"",
-      "use-scene","用这个场景",{disabled:!selected||Boolean(issue)});
+      "use-scene",choosing?"使用这个场景":"用这个场景准备一场",{disabled:!selected});
   }
   function sceneCatalog() {
     const count=byCategory(sceneCatalogCategory).length;
-    return `<section class="panel scene-catalog with-confirm">${crumb("场景")}
-      <div class="section-head"><h1 tabindex="-1">场景</h1><span id="catalog-count" class="library-count" aria-live="polite">${sceneCatalogCategory} · ${count}种</span></div>
-      <p class="subline">从一处见面地点开始，选定后再去挑人。</p>
+    const choosing=picker?.kind==="scene";
+    const title=choosing?"为本场选场景":"场景";
+    return `<section class="panel scene-catalog with-confirm">${choosing?crumb(title,"cancel-picker","返回本场"):crumb(title)}
+      <div class="section-head"><h1 tabindex="-1">${title}</h1><span id="catalog-count" class="library-count" aria-live="polite">${sceneCatalogCategory} · ${count}种</span></div>
+      <p class="subline">${choosing?"应用场景后返回本场，已选对象会保留。":"选中场景可以先了解现场，再决定是否用它准备一场。"}</p>
+      ${button("edit-custom-scene","自定义地点","quiet")}
+      <div id="catalog-preview">${scenePreview(engine.sceneById(sceneCatalogSelected))}</div>
       ${categoryFilters("scene",sceneCatalogCategory)}
       <div id="catalog-grid" class="scene-grid">${catalogCards()}</div>${catalogBar()}</section>`;
   }
   function taskSetup() {
     const short=task.kind==="practice";
-    const selected=short?goals:["自然开场","找话题和接话","说出不同意见","商量时间地点与费用","自然收尾"];
     const radios=(name,values,notes={})=>Object.entries(values).map(([key,label])=>`<label class="task-choice"><input type="radio" name="task-${name}" value="${key}"${task[name]===key?" checked":""}><span>${label}${notes[key]?`<small>${notes[key]}</small>`:""}</span></label>`).join("");
-    return `<section class="panel task-setup">${crumb(short?"找个练习":"赴约前预演")}<h1 tabindex="-1">${short?"挑一个你想练的瞬间":"这次见面，你想先练哪一段？"}</h1>
-      <div class="task-goals" role="group" aria-label="练习重点">${selected.map((goal,index)=>`<button type="button" class="choice-card" data-task-goal="${esc(goal)}" aria-pressed="${task.goal===goal}"><strong>${esc(goal)}</strong>${short?`<small>${goalNotes[index]}</small>`:""}</button>`).join("")}</div>
-      <label class="field">写一个自己的情况<input name="task-goal" aria-describedby="task-error" value="${esc(task.goal)}" maxlength="160" placeholder="例如，结束前想说明我想自己回去"></label>
-      <label class="field">在哪见面<select name="task-scene">${option("","使用推荐场景",taskSceneDefault?"":config.scene)}${library.scenes.map(scene=>option(scene.id,esc(scene.name),taskSceneDefault?"":config.scene)).join("")}</select><small id="task-scene-note">本场地点 · ${esc(engine.sceneById(config.scene)?.name||"咖啡店")}</small></label>
+    const scene=setupScene();
+    const match=resolveSetup();
+    const role=appliedPartner?appliedPartner.partnerSpec.name||"自定义对象":engine.roleById(preferredRoleId)?.name||match.role?.name||"按条件匹配";
+    const summary=`<aside class="${short?"moment-preview":"prep-summary"}" aria-label="本场安排">
+      <h2>${short?"即将进入的场面":"本场安排"}</h2>
+      <p id="moment-note">${esc(momentNotes[task.moment]||"对方会从眼前的情境开口。")}</p>
+      <dl><dt>对象</dt><dd id="task-role-note">${esc(role)}${!appliedPartner&&!preferredRoleId&&match.role?" · 推荐":""}</dd><dt>地点</dt><dd id="task-scene-note">${esc(scene?.name||"未选择")}${taskSceneDefault?" · 推荐":""}</dd></dl>
+      <div class="buttons prep-edit-actions">${button("edit-role","换对象","quiet")}${button("edit-scene","换场景","quiet")}${button("task-custom","自己捏人","quiet")}</div>
+    </aside>`;
+    const fields=short?`<div class="task-goals" role="group" aria-label="练习重点">${goals.map((goal,index)=>`<button type="button" class="choice-card" data-task-goal="${esc(goal)}" aria-pressed="${task.moment===moments[index]}"><strong>${esc(goal)}</strong><small>${goalNotes[index]}</small></button>`).join("")}</div>`:`<label class="field">这次想练什么<input name="task-goal" aria-describedby="task-error" value="${esc(task.goal)}" maxlength="160" placeholder="例如，第一次见面怎样自然开场"></label>`;
+    const edits=`${fields}<label class="field">${short?"写一句自己的情况":"补充这次的情况（选填）"}<input name="task-context" aria-describedby="task-error" value="${esc(task.context||"")}" maxlength="160" placeholder="例如，结束前想说明我想自己回去"></label>
       ${short?"":`<label class="field">你已确认的安排（选填）<textarea name="task-plan" maxlength="240" placeholder="例如，晚上七点见，对方八点半要离开">${esc(checklist.plan||"")}</textarea></label>`}
-      <section class="task-arrangement"><h2>本次安排</h2><div class="task-arrangement-grid"><fieldset><legend>练习长度</legend><div class="task-choice-row">${radios("duration",{short:"练一小段",full:"完整练一场"},{short:"建议6–8轮",full:"建议18–30轮"})}</div></fieldset>
-      <fieldset><legend>对方的说话节奏</legend><div class="task-choice-row">${radios("style",{natural:"自然日常",warm:"活泼",quiet:"慢热",direct:"直率"})}</div></fieldset></div></section>
-      ${check("adult","我已年满18岁，知道这是虚构模拟",config.adult)}
-      <p class="subline">自由聊天会把本场必要设定和已发对话交给当前服务。可以只写称呼，省略联系方式和精确地址。</p>
-      <p class="form-error" id="task-error" role="alert"></p>
-      <div class="buttons">${button("task-start",short?"开始练习":"挑一位角色","primary")}${short?"":button("task-custom","自己捏人")}</div>
-      ${connectionOptions()}</section>`;
+      <details class="setup-details"><summary>更多设定</summary><section class="task-arrangement"><div class="task-arrangement-grid"><fieldset><legend>练习长度</legend><div class="task-choice-row">${radios("duration",{short:"练一小段",full:"完整练一场"})}</div></fieldset>
+      <fieldset><legend>对方的说话节奏</legend><div class="task-choice-row">${radios("style",{natural:"自然日常",warm:"活泼",quiet:"慢热",direct:"直率"})}</div></fieldset></div></section>${short?"":preferenceFields()}</details>`;
+    return `<section class="panel task-setup${short?" moment-panel":" preparation-page"}">${crumb(short?"找个练习":"赴约前预演")}<h1 tabindex="-1">${short?"挑一个你想练的瞬间":"本场准备"}</h1>
+      ${short?`${edits}${summary}`:`<div class="prep-layout">${summary}<div class="prep-fields">${edits}</div></div>`}
+      ${check("adult","我已年满18岁，了解这是虚构情境",config.adult)}
+      <p class="subline">自由聊天会把必要设定和已发送的对话交给模型服务。可以省略姓名、联系方式和精确地址。</p>
+      <p class="form-error" id="task-error" role="alert">${esc(planIssue)}</p>
+      <div class="buttons">${button("task-start",short?"开始自由练习":"开始预演","primary")}</div>
+      <div id="setup-connection">${connectionOptions()}</div></section>`;
   }
   let taskSceneDefault=true;
+  function setupScene() {
+    return appliedScene ? window.DatingPreparationScenes.build(appliedScene) : engine.sceneById(config.scene);
+  }
+
+  function setupConfig() {
+    const sceneSpec=appliedScene||undefined;
+    if (!appliedPartner) return {...config,sceneSpec};
+    const partner=window.DatingPreparation.compile(appliedPartner, config, library);
+    return {...partner,scene:config.scene,sceneSpec};
+  }
+
+  function resolveSetup() {
+    const next=setupConfig();
+    const eligible=mode=>engine.match({...next,adult:true,mode}).find(item=>!preferredRoleId||item.id===preferredRoleId);
+    const candidates=modeExplicit?[next.mode]:[next.mode,"spark","mellow","tension","hard"];
+    for(const mode of new Set(candidates)){
+      const role=eligible(mode);
+      if(role)return {role,config:{...next,mode}};
+    }
+    return {role:null,config:next};
+  }
+
+  function setTaskMomentFromContext(value) {
+    if (/自己.{0,3}(回家|回去|走)|收尾|道别|散场|先走|早点回|结束/.test(value)) return "close";
+    if (/下次|再约|再见面/.test(value)) return "next-date";
+    if (/不同意见|换个|不太想|分歧/.test(value)) return "disagree";
+    if (/接话|接住|冷场|怎么接/.test(value)) return "follow-up";
+    if (/开场|刚见面|第一句/.test(value)) return "opening";
+    return undefined;
+  }
+
   function clearTaskError(){
+    planIssue="";
     const error=app.querySelector("#task-error");
     if(error?.nodeType)error.textContent="";
   }
   function recommendTaskScene(){
     if(taskSceneDefault){
-      const activity=task.kind==="practice"?goalActivities[goals.indexOf(task.goal)]:"A01";
+      const activity=task.kind==="practice"?goalActivities[moments.indexOf(task.moment)]:"A01";
       config.scene=library.scenes.find(scene=>scene.activityId===activity)?.id||"S02";
     }
     const note=app.querySelector("#task-scene-note");
-    if(note?.nodeType)note.textContent="本场地点 · "+engine.sceneById(config.scene)?.name;
+    if(note?.nodeType)note.textContent=(setupScene()?.name||"未选择")+(taskSceneDefault?" · 推荐":"");
+    const description=app.querySelector("#moment-note");
+    if(description?.nodeType)description.textContent=momentNotes[task.moment]||"对方会从眼前的情境开口。";
+    const roleNote=app.querySelector("#task-role-note");
+    if(roleNote?.nodeType&&!appliedPartner&&!preferredRoleId){const role=resolveSetup().role;roleNote.textContent=role?`${role.name} · 推荐`:"按条件匹配";}
   }
   const recordKey="dating-rehearsals-v1";
+  let recordKind="",recordScene="";
   function readRecords(){
     const rows=JSON.parse(window.localStorage?.getItem(recordKey)||"[]");
-    if(!Array.isArray(rows))throw new Error("无法读取复盘摘要");
-    return rows.filter(item=>typeof item?.id==="string"&&typeof item?.task?.goal==="string");
+    if(!Array.isArray(rows)||rows.some(item=>typeof item?.id!=="string"||typeof item?.task?.goal!=="string"))throw new Error("无法读取复盘摘要");
+    return rows;
   }
   function savedRecords(){try{return readRecords();}catch{return [];}}
+  function recordCards(rows){
+    const filtered=rows.filter(item=>(!recordKind||item.task.kind===recordKind)&&(!recordScene||item.scene===recordScene));
+    return filtered.map(item=>`<article class="ticket"><p class="meta">${esc(item.date||"日期未记录")} · ${item.task.kind==="practice"?"能力练习":"赴约预演"} · ${esc(engine.sceneById(item.scene)?.name||"场景未记录")}</p><h2>${esc(item.task.goal)}</h2><p>${esc(item.summary||"摘要未记录")}</p><div class="buttons"><button type="button" data-record-retry="${esc(item.id)}">按这份设定再练</button><button type="button" data-record-delete="${esc(item.id)}" class="quiet">删除摘要</button></div></article>`).join("")||"<p>没有符合当前筛选的摘要。</p>";
+  }
   function savedReviews(){
     let rows, failed=false;
     try{rows=readRecords();}catch{rows=[];failed=true;}
+    const sceneIds=[...new Set(rows.map(item=>item.scene))].filter(id=>engine.sceneById(id));
+    if(!sceneIds.includes(recordScene))recordScene="";
     return `<section class="panel journal-page">${crumb("已保存复盘")}<h1 tabindex="-1">已保存复盘</h1><p class="subline">这里只显示你主动保存的摘要。完整对话可在散场时下载。</p>
-      <div class="record-stack">${rows.map(item=>`<article class="ticket"><p class="meta">${esc(item.date)} · ${item.task.kind==="practice"?"能力练习":"赴约预演"}</p><h2>${esc(item.task.goal)}</h2><p>${esc(item.summary)}</p><div class="buttons"><button type="button" data-record-retry="${esc(item.id)}">再练一次</button><button type="button" data-record-delete="${esc(item.id)}" class="quiet">删除摘要</button></div></article>`).join("")||
-      (failed?"<p role='alert'>目前无法读取摘要。已有下载仍可从下载文件夹查看。</p>":`<p>还没有保存的复盘。</p>${button("new-practice","开始练习","primary")}`)}</div>
+      ${rows.length?`<div class="field-row"><label class="field">练习类型<select name="record-kind">${[["","全部类型"],["practice","能力练习"],["rehearsal","赴约预演"]].map(([id,label])=>option(id,label,recordKind)).join("")}</select></label><label class="field">场景<select name="record-scene">${option("","全部场景",recordScene)}${sceneIds.map(id=>option(id,esc(engine.sceneById(id).name),recordScene)).join("")}</select></label></div>`:""}
+      <div class="record-stack" id="record-stack">${rows.length?recordCards(rows):failed?`<p role="alert">目前无法读取摘要。已有下载仍可从下载文件夹查看。</p>${button("saved-reviews","重新读取")}`:`<p>还没有保存的复盘。</p>${button("new-practice","开始练习","primary")}`}</div>
       ${legacyNotes||legacyError?button("legacy-journal","管理旧笔记","quiet"):""}</section>`;
   }
   const offlineId="natural-close-v1";
@@ -430,22 +600,27 @@
     const section = {cover:"home",roles:"roles",preparation:preparation.step===1?"roles":"all-scenes",sceneCatalog:"all-scenes",settings:"all-scenes",preferences:"all-scenes",invitation:"all-scenes",taskSetup:task?.kind==="practice"?"journal":null,savedReviews:"saved-reviews"}[screen];
     const inScene=busy||suspended;
     const links=[["home","首页"],["roles","角色库"],["all-scenes","场景"],["journal","找个练习"]];
-    if(savedRecords().length||legacyNotes||legacyError||screen==="savedReviews")links.push(["saved-reviews","已保存复盘"]);
+    links.push(["saved-reviews","复盘"]);
     return `<nav class="page-nav" aria-label="网页导航"><span class="brand"><span aria-hidden="true">♡</span> Dating之神</span><div>
       ${screen==="live"?`<span class="nav-live-status">约会${run.phase==="paused"?"已暂停":"进行中"}</span>${button("leave-live","暂停并离开","quiet")}`:links.map(([id,label])=>`<button type="button" data-go="${id}" class="quiet${section===id?" nav-current":""}"${section===id?' aria-current="page"':""}${inScene?" disabled":""}>${label}</button>`).join("")}</div></nav>`;
   }
 
-  function preferences() {
-    return `<section class="panel preferences-page">
-      ${confirming?`${crumb("确认偏好","return-scenes","选场景")}<h1 tabindex="-1">确认偏好</h1>${steps(2)}`:heading("", "想遇见怎样的人？", "偏好只用来挑这一场。")}
-      <div class="form-grid"><section class="form-section"><h2>这一场怎么进行</h2>
+  function connectionDialog() {
+    return `<dialog id="connection-help" class="content-dialog" aria-label="连接自由聊天"><h2>连接自由聊天</h2>
+      <p>自由练习需要可用的模型。网页由本地服务连接模型，密钥留在服务侧。</p>
+      <ol><li>在本地服务启动环境配置 <code>OPENAI_API_KEY</code> 和 <code>OPENAI_MODEL</code>。</li><li>重新启动本地服务，再返回本场检查。</li></ol>
+      <p>也可以在当前宿主聊天中主动开启文字预演。它会建立独立的练习会话。</p><div class="buttons">${button("recheck-connection","检查连接","primary")}${button("close-content","返回","quiet")}</div></dialog>`;
+  }
+
+  function preferenceFields() {
+    return `<div class="form-grid"><section class="form-section"><h2>这一场怎么进行</h2>
         <label class="field"><span>这一场的节奏（自主选择）</span><select name="mode">${Object.entries(modes).map(([id,label])=>option(id,label,config.mode)).join("")}</select><small>高档会出现含糊回应、期待落差和关系张力；边界与随时退出始终有效。</small></label>
         <div class="field-row">
           <label class="field"><span>你们的关系起点</span><select name="stage">${Object.entries({first:"初次见面",second:"第二次约会",friends:"朋友相约",flirting:"正在暧昧",steady:"稳定交往"}).map(([id,label])=>option(id,label,config.stage)).join("")}</select></label>
           <label class="field"><span>这次的关系期待</span><select name="intent">${Object.entries({undecided:"还没想好",casual:"轻松相处",serious:"认真了解"}).map(([id,label])=>option(id,label,config.intent)).join("")}</select></label>
         </div>
 
-          <div class="field-row"><label class="field"><span>本场预算（模拟人均，元）</span><input type="number" name="budget" min="0" max="100000" step="1" value="${config.budget}"></label><label class="field"><span>可用时间（分钟）</span><input type="number" name="timeBudget" min="5" max="1440" step="1" value="${config.timeBudget}"></label></div>
+          <div class="field-row"><label class="field"><span>本场预算（模拟人均，元）</span><input type="number" name="budget" min="0" max="100000" step="1" value="${esc(setupNumbers.budget??config.budget)}" placeholder="默认300元"></label><label class="field"><span>可用时间（分钟）</span><input type="number" name="timeBudget" min="5" max="1440" step="1" value="${esc(setupNumbers.timeBudget??config.timeBudget)}" placeholder="默认180分钟"></label></div>
           <label class="field"><span>希望的相处方式（需现场协商）</span><select name="exclusivity">${Object.entries({unspecified:"暂不确定",exclusive:"希望彼此排他",open:"可接受开放关系"}).map(([id,label])=>option(id,label,config.exclusivity)).join("")}</select></label>
         <section class="task-arrangement"><h3>活动偏好</h3><div class="form-grid">
           <label class="field"><span>约会经验</span><select name="experience">${option("novice","刚开始尝试",config.experience)}${option("familiar","比较熟悉",config.experience)}</select></label>
@@ -477,8 +652,13 @@
         <fieldset><legend>避开的话题</legend><div class="checks">${Object.entries(library.topics).map(([id,label])=>check("avoid",label,config.avoid.includes(id),id)).join("")}</div></fieldset>
         ${check("surprise","允许一点场景小变化",config.surprise)}${check("guidance","开场时给我一个方向",config.guidance)}</div></section>
 
-      </div>
-      <div class="preferences-submit">${check("adult","我已年满 18 岁，并知道这是一场虚构模拟",config.adult)}<p id="adult-reason" class="subline"${config.adult?" hidden":""}>请先确认成年，再查看见面便笺。</p><div class="buttons">${confirming?`<button type="button" data-go="match" id="preferences-next" class="primary"${config.adult?"":" disabled aria-describedby='adult-reason'"}>查看见面便笺</button>${button("return-scenes","返回选场景","quiet")}`:`${button("blind","直接去盲约","primary")}${button("settings","选地点和边界")}${button("home","返回首页","quiet")}`}</div></div>
+      </div>`;
+  }
+
+  function preferences() {
+    return `<section class="panel preferences-page">
+      ${confirming?`${crumb("确认偏好","return-scenes","选场景")}<h1 tabindex="-1">确认偏好</h1>${steps(2)}`:heading("", "想遇见怎样的人？", "偏好只用来挑这一场。")}
+      ${preferenceFields()}<div class="preferences-submit">${check("adult","我已年满 18 岁，并知道这是一场虚构模拟",config.adult)}<p id="adult-reason" class="subline"${config.adult?" hidden":""}>请先确认成年，再查看见面便笺。</p><div class="buttons">${confirming?`<button type="button" data-go="match" id="preferences-next" class="primary"${config.adult?"":" disabled aria-describedby='adult-reason'"}>查看见面便笺</button>${button("return-scenes","返回选场景","quiet")}`:`${button("blind","直接去盲约","primary")}${button("settings","选地点和边界")}${button("home","返回首页","quiet")}`}</div></div>
     </section>`;
   }
 
@@ -609,49 +789,77 @@
   function conversationView(){
     const role=engine.resolveRole(run);
     const paused=run.phase==="paused";
-    const event=run.events.at(-1);
-    const suggestions=event?.suggestions||[];
-    const stationChoices=run.pendingStation?engine.choices(run).filter(item=>["station-confirm","station-cancel"].includes(item.id)):
-      /(?:想|要不|可以|去不去|接下来|下一站).{0,18}(?:再去|换个地方|第二站|下一站|续摊)|(?:再去|第二站|下一站|续摊)/.test(event?.label||"") ? engine.choices(run).filter(item=>item.id.startsWith("station:")).slice(0,3):[];
+    const suggestions=currentSuggestions();
+    const actions=engine.choices(run).filter(item=>item.id!=="leave");
+    const stationChoices=run.pendingStation?actions.filter(item=>["station-confirm","station-cancel"].includes(item.id)):[];
+    const controls=actions.filter(item=>!stationChoices.includes(item));
     const bubble=(who,text)=>`<div class="chat-bubble ${who==="你"?"is-user":""}"><small>${who}</small><p>${esc(text)}</p></div>`;
-    return `<section class="panel live-panel natural-chat"><header class="section-head"><div><p class="meta">${run.branchFrom===null?"约会预演":"从原场再练"} · ${run.events.length}回合</p><h1 tabindex="-1">${esc(role.name)} · ${esc(run.location)}</h1></div>${paused?button("resume","继续聊天"):button("pause","暂停","quiet")}</header>
+    return `<section class="panel live-panel natural-chat"><header class="section-head"><div><p class="meta">${run.branchFrom===null?"约会预演":"从原场再练"} · ${run.events.length}回合</p><h1 tabindex="-1">${esc(role.name)} · ${esc(run.location)}</h1><p class="meta">${esc(run.rehearsalTask.goal)}</p></div>${paused||sessionExpired?"":button("pause","暂停","quiet")}</header>
       <div class="messages" aria-label="本场对话">
       ${modelOpening?.detail?`<p class="scene-note">${esc(modelOpening.detail)}</p>`:""}
       ${modelOpening?.line?bubble("TA",modelOpening.line):""}
       ${run.events.map(turn=>bubble("你",turn.label)+(turn.detail?`<p class="scene-note">${esc(turn.detail)}</p>`:"")+bubble("TA",turn.reply)).join("")}
-      ${busy&&triedTurn?bubble("你",triedTurn)+'<p role="status" class="scene-note">等TA回复…</p>':""}</div>
-      ${!paused&&stationChoices.length?`<section class="connection-note"><h2>${run.pendingStation?"确认是否换个地方":"可以提议换个地方"}</h2><div class="buttons">${stationChoices.map(item=>`<button type="button" data-confirm-action="${esc(item.id)}"${busy?" disabled":""}>${esc(item.label)}</button>`).join("")}</div></section>`:""}
-      ${paused?`<div class="chat-paused"><p>先停在这里。回来的时候会接上当前对话。</p>${button("leave-live","离开现场","quiet")}</div>`:
-      `<div class="composer"><div class="suggestion-list">${suggestions.map((line,index)=>`<button type="button" data-draft-index="${index}" aria-pressed="${selectedDraft===index}"${busy?" disabled":""}>${esc(line)}</button>`).join("")}</div>
-      <label class="field"><span class="sr-only">输入你想说的话</span><textarea name="utterance" placeholder="输入你想说的话…" maxlength="1200"${busy?" disabled":""}>${esc(utterance)}</textarea></label>
-      <div class="section-head">${button("hint","我卡住了","quiet")}<div>${busy?button("cancel","取消等待","quiet"):""}<button type="button" data-go="send" class="primary"${busy||!utterance.trim()?" disabled":""}>发送</button></div></div>
-      ${coachOpen?`<aside class="coach-drawer"><h2>可以先接一下刚才那句</h2><p>挑一个具体细节，接着说自己的想法。也可以只说你现在想做什么。</p>${suggestions.length?`<button type="button" data-draft-index="0"${busy?" disabled":""}>试试这句：${esc(suggestions[0])}</button>`:""}
-        <p class="subline">「帮我顺一下」会把当前草稿交给服务，草稿不会发送给TA。</p>${button("polish",polishRequest?"正在整理…":"帮我顺一下","quiet")}
-        ${polish&&polish.source===utterance?`<p>可以试试：「${esc(polish.line)}」</p><div class="buttons">${button("apply-polish","换成这句")}${button("dismiss-polish","保留原文","quiet")}</div>`:""}</aside>`:""}</div>`}
-      <div class="buttons">${button("request-end","结束并查看报告","quiet")}${button("reset","删除本场","quiet danger")}</div></section>`;
+      ${busy&&triedTurn?`<div class="chat-bubble is-user"><small>你 · 等待确认</small><p>${esc(triedTurn)}</p></div><p role="status" class="scene-note">等TA回复…</p>`:""}</div>
+      ${!paused&&!sessionExpired&&stationChoices.length?`<section class="connection-note"><h2>待确认的第二站 · ${esc(engine.sceneById(run.pendingStation)?.name||"新地点")}</h2><p>确认后才换地方并计入本场时间和预算。${esc(sceneFacts(engine.sceneById(run.pendingStation)))}</p><div class="buttons">${stationChoices.map(item=>`<button type="button" data-confirm-action="${esc(item.id)}"${busy?" disabled":""}>${esc(item.label)}</button>`).join("")}</div></section>`:""}
+      ${paused?`<div class="chat-paused"><p>本场已暂停。继续时会接上当前对话。</p><div class="buttons">${button("resume","继续本场","primary")}${button("leave-live","离开现场","quiet")}</div></div>`:
+      `<div class="composer">
+      <label class="field"><span>你想怎么回？</span><textarea name="utterance" placeholder="用自己的话回复…" maxlength="1200"${busy?" disabled":""}>${esc(utterance)}</textarea></label>
+      ${liveError?`<p class="live-feedback form-error" role="alert">${esc(liveError)}</p>`:""}
+      <div class="section-head draft-footer">${button("hint",coachOpen?"收起建议":"看看怎么接","quiet")}<div>${busy?button("cancel","取消等待","quiet"):""}<button type="button" data-go="send" class="primary"${busy||sessionExpired||!retryTurn?.uncertain&&!utterance.trim()?" disabled":""}>${busy?"等待回应…":retryTurn?.uncertain?"核对发送状态":retryTurn&&liveError&&!sessionExpired?"重试这句":"发送"}</button></div></div>
+      ${coachOpen?`<aside class="coach-drawer"><h2>试着接一句</h2><p>可以直接表达你的想法，也可以用这些例句开头。</p>
+        <div class="suggestion-list">${suggestions.map((line,index)=>`<button type="button" data-draft-index="${index}" aria-pressed="${selectedDraft===index}"${busy?" disabled":""}>${esc(line)}</button>`).join("")}</div>
+        <p class="subline">「帮我顺一句」会把当前草稿交给服务。</p>${button("polish",polishRequest?"正在整理…":"帮我顺一句","quiet")}
+        ${polish?`<p>你的原句：${esc(polish.source)}</p><p>建议：${esc(polish.line)}</p>${polish.source===utterance?`<div class="buttons">${button("apply-polish","换成这句")}${button("dismiss-polish","保留原文","quiet")}</div>`:`<p class="meta">草稿已修改，这条建议对应之前的文字。</p>`}`:""}</aside>`:""}</div>`}
+      ${!paused&&!sessionExpired&&controls.length?`<details class="setup-details"><summary>现场可以做什么</summary><div class="buttons">${controls.map(item=>`<button type="button" data-confirm-action="${esc(item.id)}"${busy?" disabled":""}>${esc(item.label)}</button>`).join("")}</div></details>`:""}
+      <div class="buttons">${button("request-end",sessionExpired?"查看本页已确认对话":"结束并复盘","quiet")}${button("reset","删除本场会话","quiet danger")}</div></section>`;
+  }
+
+  function currentSuggestions(){
+    const suggestions=run.events.at(-1)?.suggestions;
+    if(suggestions?.length)return suggestions.slice(0,3);
+    if(run.events.length)return [];
+    const starter={opening:"你好，今天见到你挺开心。","follow-up":"听起来你挺在意这件事，能多说一点吗？",disagree:"我有个不同的想法，你愿意一起看看吗？",close:"谢谢，我今天想自己回去。","next-date":"我今天聊得很开心，你愿意改天再见吗？"};
+    const line=starter[run.rehearsalTask?.moment];
+    return line?[line]:[];
   }
 
   function evidenceView(){
     if(!original?.rehearsalTask)return cover();
     const item=analysis?.findings?.[0];
     return `<section class="panel report-panel evidence-page"><h1 tabindex="-1">本场复盘</h1>
-      ${report.evidenceReport(original,alternative,analysis,{...checklist,claimedAction:checklist.claimedAction??item?.alternative,pending:reportLoading,actions:true,canReplay:!alternative})}
+      ${report.evidenceReport(original,alternative,analysis,{...checklist,claimedAction:checklist.claimedAction??item?.alternative,pending:reportLoading,actions:true,canReplay:!sessionExpired})}
       <div id="report-feedback">${reportFeedback()}</div>
-      <div class="buttons report-toolbar">${button("open-export","导出报告","primary")}${button("save-evidence","保存这次复盘")}${original.events.length?button("open-transcript","查看完整对话","quiet"):""}${task.kind==="rehearsal"?button("open-checklist","编辑赴约清单","quiet"):""}${button("retry-task","换个场景练","quiet")}${button("reset","删除本场","quiet danger")}</div>
+      <p class="subline">保存摘要会写入当前浏览器，包含练习目标、场景和一条本场观察。</p>
+      <div class="buttons report-toolbar">${button("open-export","导出报告","primary")}${button("save-evidence","保存摘要")}${original.events.length?button("open-transcript","查看完整对话","quiet"):""}${task.kind==="rehearsal"?button("open-checklist","编辑赴约清单","quiet"):""}${button("retry-task","按原设定再试","quiet")}${button("reset","删除本场会话","quiet danger")}</div>
       <dialog id="export-options" aria-label="导出报告" class="content-dialog"><h2>导出报告</h2><p>默认下载复盘摘要。你可以选择带上完整对话或私人便笺。</p>
         ${check("includeFull","包含完整对话",includeFull)}
         <label class="field">私人便笺<textarea name="note" maxlength="320">${esc(draft.note)}</textarea></label>
         ${check("includeNote","包含这条私人便笺",draft.includeNote)}
-        <div class="buttons">${button("download-evidence","下载HTML报告","primary")}${button("close-content","返回复盘","quiet")}</div><p id="export-status" class="subline" role="status"></p>
-        <hr><h3>Dating卡</h3><label class="field">想分享的一句感受<input name="accepted" maxlength="96" value="${esc(draft.accepted)}"></label>
-        ${check("confirmed","我确认这句话可用来制作分享卡",draft.confirmed)}${button("download-card","下载分享卡（SVG）")}<p class="form-error" id="share-error" role="alert"></p></dialog>
+        <details class="setup-details"><summary>预览下载内容</summary><div id="export-preview">${exportEvidencePreview()}</div></details>
+        <div class="buttons">${button("download-evidence","下载HTML报告","primary")}${button("close-content","返回复盘","quiet")}</div><p id="export-status" class="subline" role="status"></p></dialog>
+      <div class="buttons">${button("open-share-card","制作分享卡","quiet")}</div>
+      <dialog id="share-card-options" aria-label="制作分享卡" class="content-dialog"><h2>Dating分享卡</h2><label class="field">想分享的一句感受<input name="accepted" maxlength="96" value="${esc(draft.accepted)}"></label>
+        <img class="card-preview" id="card-art" alt="分享卡预览" hidden>${check("confirmed","我确认这句话可用来制作分享卡",draft.confirmed)}${button("download-card","下载分享卡（SVG）","primary")}${button("close-content","返回复盘","quiet")}<p class="form-error" id="share-error" role="alert"></p></dialog>
       ${task.kind==="rehearsal"?`<dialog id="checklist-options" aria-label="编辑赴约清单" class="content-dialog"><h2>编辑赴约清单</h2><div class="form-grid">${[["claimedAction","我想试的做法"],["question","我想确认的问题"],["fallback","如果计划变了"]].map(([key,label])=>`<label class="field">${label}<input name="checklist.${key}" maxlength="240" value="${esc(checklist[key]??(key==="claimedAction"?item?.alternative||"":""))}"></label>`).join("")}</div>${button("close-checklist","完成","primary")}</dialog>`:""}
       </section>`;
+  }
+
+  function exportEvidenceOptions(){
+    const {claimedAction,question,fallback}=checklist;
+    return {claimedAction:claimedAction??analysis?.findings?.[0]?.alternative,question,fallback,full:includeFull,
+      includeNote:draft.includeNote,note:draft.note,opening:originalOpening?.line};
+  }
+
+  function exportEvidencePreview(){
+    return original?report.evidenceReport(original,alternative,analysis,exportEvidenceOptions()):"";
   }
   function transcript(){
     return `<section class="panel journal-page"><h1 tabindex="-1">本场完整对话</h1>${button("return-transcript","返回复盘","quiet")}
       ${originalOpening?.line?`<p class="scene-note">TA · ${esc(originalOpening.line)}</p>`:""}
-      ${log(original.events)}</section>`;
+      <ol class="log">${original.events.map((event,index)=>`<li id="transcript-turn-${index+1}"><small>第${index+1}回合${event.before?.scene?` · ${esc(sceneName(event.before.scene,original))}`:""}</small>
+        <p><strong>${event.inputType==="action"?"你的动作":"你"}</strong> ${esc(event.label)}</p><p><strong>TA</strong> ${esc(event.reply)}</p>
+        ${event.detail?`<p>${esc(event.detail)}</p>`:""}${event.effect?`<small>${esc(event.effect)}</small>`:""}
+        ${primarySessionId&&!sessionExpired&&event.inputType!=="action"?`<div class="buttons"><button type="button" class="quiet" data-evidence-replay="${index}">从这句再试</button></div>`:""}</li>`).join("")}</ol></section>`;
   }
 
   function reportFeedback() {
@@ -677,7 +885,7 @@
             template.innerHTML=summary;
             const current=app.querySelector(".evidence-summary");
             const next=template.content.querySelector(".evidence-summary");
-            if(current && next){current.replaceWith(next);updateRegion("#report-feedback",reportFeedback());}
+            if(current && next){current.replaceWith(next);updateRegion("#report-feedback",reportFeedback());updateRegion("#export-preview",exportEvidencePreview());}
             else show("evidenceView","",false);
           }else show("evidenceView","",false);
         }
@@ -713,6 +921,15 @@
 
   function exportDraft() {
     return { ...draft, nickname: config.nickname, expectation: config.expectation };
+  }
+
+  function cardOptions(preview=false) {
+    const options=exportDraft();
+    if(task){
+      options.selected=draft.selected??original.events.findIndex(event=>event.inputType!=="action");
+      options.confirmed=preview||draft.confirmed;
+    }
+    return options;
   }
 
   function final() {
@@ -774,15 +991,34 @@
     const budgetFields = `<div class="field-row"><label class="field">本场预算（元）<input name="budget" type="number" min="0" max="100000" value="${config.budget}"></label><label class="field">可用时间（分钟）<input name="timeBudget" type="number" min="5" max="1440" value="${config.timeBudget}"></label></div>`;
     const adultField = `<fieldset class="adult-gate"><legend>开始前确认</legend>${check("adult", "我已年满18岁", config.adult)}</fieldset>`;
     const step=preparation.step;
+    if(picker?.kind==="partner"){
+      const frame={crumb:crumb("自己捏人","cancel-picker","取消修改"),controls:""};
+      return window.DatingPreparation.render(preparation,library,{frame,direct:true,currentScene:config.scene,canUndo:Boolean(partnerUndo),activeGroup:activeBuilderGroup,singleStep:true,
+        flowBar:selectionBar("builder-bar",`已设置${window.DatingPreparation.assumptionCount(preparation)}项`,"其余保持未知","apply-partner","使用这个对象",{extra:button("cancel-picker","取消修改","quiet")})});
+    }
     const frame = step===1 ? {crumb:crumb("角色库"),controls:roleTabs(true)+steps(0)}
       : {crumb:crumb(step===2?"选场景":"确认偏好","prep-back","上一步"),controls:steps(step===2?1:2)};
     return window.DatingPreparation.render(preparation, library, {budgetFields, adultField, currentScene:config.scene, frame:step?frame:"", direct:directPreparation, sceneCards:step===2&&directPreparation?customScenePicker():"", flowBar:step===1||(step===2&&directPreparation)?prepBar():"", canUndo:Boolean(partnerUndo), activeGroup:activeBuilderGroup,issue:preparationIssue}) + connectionOptions();
 
   }
-  const views = {taskSetup, transcript, offlineView, savedReviews, legacyJournal, evidenceView, preparation:preparationView, cover, roles:roleLibrary, sceneCatalog, preferences, settings, invitation, live, review, final, practiceReview };
+
+  function sceneEditor() {
+    const templates=window.DatingPreparationScenes.templates;
+    const choices=[...library.scenes.map(scene=>[scene.id,scene.name]),...Object.entries(templates).map(([id,item])=>[id,item.name])];
+    return `<section class="panel task-setup">${crumb("自定义地点","cancel-picker","取消修改")}<h1 tabindex="-1">自定义地点</h1>
+      <label class="field">活动模板<select name="scene-edit.template">${choices.map(([id,name])=>option(id,esc(name),sceneDraft.template)).join("")}</select></label>
+      <label class="field">地点称呼<input name="scene-edit.place" maxlength="100" value="${esc(sceneDraft.place)}" placeholder="使用虚构或泛化称呼"></label>
+      <div class="field-row"><label class="field">模拟人均费用（元）<input type="number" min="0" max="100000" name="scene-edit.budget" value="${esc(sceneDraft.budget??"")}" placeholder="沿用模板"></label>
+      <label class="field">预计时长（分钟）<input type="number" min="0" max="1440" name="scene-edit.duration" value="${esc(sceneDraft.duration??"")}" placeholder="沿用模板"></label></div>
+      <div id="scene-track-fields"${sceneDraft.template==="track"?"":" hidden"}><label class="field">操场活动<select name="scene-edit.activity">${option("walk","散步",sceneDraft.activity)}${option("jog","慢跑",sceneDraft.activity)}</select></label>${check("scene-edit.accessConfirmed","已确认可进入",sceneDraft.accessConfirmed)}</div>
+      <p class="subline">地点是本场设定，开放和预约信息需要自行确认。费用留空时用活动模板的模拟值。</p>
+      <p id="scene-edit-error" class="form-error" role="alert"></p><div class="buttons">${button("apply-custom-scene","使用这个地点","primary")}${button("cancel-picker","取消修改","quiet")}</div></section>`;
+  }
+
+  const views = {taskSetup, transcript, offlineView, savedReviews, legacyJournal, evidenceView, preparation:preparationView, sceneEditor, cover, roles:roleLibrary, sceneCatalog, preferences, settings, invitation, live, review, final, practiceReview };
   function show(next, message = "", focus = true, route = {}) {
     if (window.history && !route.fromHistory) {
-      const state = {datingGod:true, screen:next, ...(next==="preparation"?{step:preparation.step}:{})};
+      const state = {datingGod:true, screen:next, ...(picker?{picker}:{}), ...(next==="preparation"?{step:preparation.step}:{})};
       try {
         if (route.replace || !screen) window.history.replaceState(state, "", `#${next}`);
         else if (next !== screen || (next==="preparation" && window.history.state?.step!==preparation.step)) {
@@ -798,7 +1034,7 @@
       if (recordHost) document.getElementById("radar-host")?.replaceWith(recordHost);
       const marker=app.querySelector(".nav-live-status");
       if(marker) marker.textContent=run.phase==="paused"?"约会已暂停":"约会进行中";
-    } else app.innerHTML = navigation() + views[next]();
+    } else app.innerHTML = navigation() + views[next]() + (next==="live"?"":connectionDialog());
     if (modelMode && next === "live" && !run.rehearsalTask) {
       const last = run.events.at(-1);
       const line = app.querySelector("#model-line");
@@ -824,8 +1060,10 @@
     if(next==="journal"&&screen!=="live"){newTask("practice");return;}
     if (!next || (!Object.hasOwn(views,next)&&next!=="journal")) return;
     if((next==="taskSetup"&&!task)||(next==="offlineView"&&!offline)){show("cover","",true,{replace:true});return;}
+    if(next==="sceneEditor"&&!sceneDraft){show(task?"taskSetup":"sceneCatalog","",true,{replace:true});return;}
     if(next==="transcript"&&!original){show("cover","",true,{replace:true});return;}
     if(next==="evidenceView"&&!original?.rehearsalTask){show("cover","",true,{replace:true});return;}
+    if(next==="live"&&run?.phase==="ended"&&original){show(original.rehearsalTask?"evidenceView":"review","",true,{replace:true});return;}
     if ((next==="invitation"&&!candidates.length) || (["live","review","final","practiceReview"].includes(next)&&!run)) {
       show("cover", "", true, {replace:true});
       return;
@@ -837,7 +1075,12 @@
       status.textContent = "这场还在进行。可以暂停并离开，或先结束再回看。";
       return;
     }
+    picker=event.state.picker||null;
     show(next, "", true, {fromHistory:true});
+    if(focusAfterReturn){
+      app.querySelector(`[data-go="${focusAfterReturn}"]`)?.focus();
+      focusAfterReturn="";
+    }
     if(next==="evidenceView"||next==="final")window.scrollTo?.(0,reportScroll);
   });
 
@@ -846,7 +1089,9 @@
     cardPreviewUrl = null;
     const preview = document.getElementById("card-art");
     if (!preview) return;
-    const image = report.card(original, exportDraft(), alternative);
+    const image = report.card(original, cardOptions(true), alternative);
+    preview.hidden=!image;
+    if(!image)preview.removeAttribute?.("src");
     if (!image) return;
     cardPreviewUrl = URL.createObjectURL(new Blob([image], { type: "image/svg+xml;charset=utf-8" }));
     preview.src = cardPreviewUrl;
@@ -866,7 +1111,7 @@
       if(run.branchFrom===null){original=run;primarySessionId=session?.sessionId;}
       else alternative=run;
       show("evidenceView");
-      if(!analysis&&original.events.length>=3)loadReport(primarySessionId);
+      if(!sessionExpired&&!analysis&&original.events.some(event=>event.inputType!=="action"))loadReport(primarySessionId);
       return;
     }
     if(run.practiceRuleId){show("practiceReview");return;}
@@ -877,8 +1122,14 @@
 
   function startDate(role, runConfig=config) {
     radar.begin(null);
+    const preparedGoal=task?.goal.trim();
+    const taskInput=task?{
+      kind:task.kind,goal:preparedGoal||"练习我在意的时刻",duration:task.duration,style:task.style,
+      ...(task.moment?{moment:task.moment}:{}),
+      ...([task.context,checklist.plan].some(value=>value?.trim())?{context:[task.context,checklist.plan].filter(value=>value?.trim()).join("\n").slice(0,240)}:{})
+    }:null;
     if (modelMode) return modelRequest("/api/session", {
-      ...(task?{task}:{}),
+      ...(taskInput?{task:taskInput}:{}),
       config:{radarEnabled:!task,...(config.practiceRuleId?{practiceRuleId:config.practiceRuleId}:{}),...Object.fromEntries(["adult","scene","player","presentation","avoid","seed","mode","traits","interest","surprise","stage","intent","exclusivity","budget","timeBudget","alcohol","experience","diet","partnerSpec","sceneSpec","preparation"].map(key=>[key,runConfig[key]]))},
       roleId:role.id,
     }, value => {
@@ -915,15 +1166,16 @@
   app.addEventListener("input", (event) => {
     if (radar.handleInput(event)) return;
     const { name, value, checked, type } = event.target;
+    if(name==="record-kind"||name==="record-scene"){
+      if(name==="record-kind")recordKind=value;else recordScene=value;
+      updateRegion("#record-stack",recordCards(savedRecords()));return;
+    }
     if (["role-search","role-gender","role-trait"].includes(name)) {
       if (event.isComposing) return;
       if (name==="role-search") roleSearch=value;
       if (name==="role-gender") roleGender=value;
       if (name==="role-trait") roleTrait=value;
       roleLimit=12;
-      if (!filteredRoles().some(role=>role.id===selectedRoleId)) {
-        selectedRoleId=null;roleDetailOpen=false;
-      }
       refreshRoles(true);
       return;
     }
@@ -965,19 +1217,33 @@
       refreshBuilderSummary();
       return;
     }
-    if(name==="task-goal"){task.goal=value;setPressed("task-goal",value);recommendTaskScene();clearTaskError();return;}
-    if(name==="task-scene"){taskSceneDefault=!value;if(value)config.scene=value;recommendTaskScene();return;}
+    if(name?.startsWith("scene-edit.")&&sceneDraft){
+      const key=name.slice("scene-edit.".length);
+      sceneDraft[key]=type==="checkbox"?checked:value;
+      if(key==="template"){
+        const track=app.querySelector("#scene-track-fields");
+        if(track?.nodeType)track.hidden=value!=="track";
+      }
+      return;
+    }
+    if(name==="task-goal"&&task){task.goal=value;task.moment=setTaskMomentFromContext(value);recommendTaskScene();clearTaskError();return;}
+    if(name==="task-context"&&task){
+      task.context=value;
+      if(task.kind==="practice"&&!task.goal){task.moment=setTaskMomentFromContext(value);recommendTaskScene();}
+      clearTaskError();return;
+    }
+    if(name==="task-scene"&&task){taskSceneDefault=!value;if(value)config.scene=value;recommendTaskScene();return;}
     if(name==="task-duration"){task.duration=value;return;}
     if(name==="task-style"){task.style=value;return;}
     if(name==="task-plan"){checklist.plan=value;return;}
-    if(name==="includeFull"){includeFull=checked;return;}
+    if(name==="includeFull"){includeFull=checked;updateRegion("#export-preview",exportEvidencePreview());return;}
     if(name?.startsWith("checklist.")){checklist[name.slice(10)]=value;return;}
     if(name==="utterance"&&task) {
-      if(value!==utterance)retryTurn=null;
+      if(value!==utterance&&!retryTurn?.uncertain)retryTurn=null;
       utterance=value;selectedDraft=-1;
       setPressed("draft-index",null);
       const send=app.querySelector('[data-go="send"]');
-      if(send?.nodeType)send.disabled=!value.trim()||busy;
+      if(send?.nodeType){send.disabled=busy||sessionExpired||!retryTurn?.uncertain&&!value.trim();if(!busy&&!retryTurn)send.textContent="发送";}
       return;
     }
     if (name === "utterance") { if (utterance !== value) retryTurn = null; utterance = value; return; }
@@ -991,11 +1257,19 @@
       config[name] = checked ? [...list, value] : list.filter((item) => item !== value);
     } else if (Object.hasOwn(config, name)) {
       if (name === "budget" || name === "timeBudget") {
+        if(screen==="taskSetup"){
+          setupNumbers[name]=value;
+          const number=value===""?(name==="budget"?300:180):Number(value);
+          const valid=Number.isFinite(number)&&number>=(name==="budget"?0:5)&&number<=(name==="budget"?100000:1440)&&(name==="budget"||Number.isInteger(number));
+          if(valid){config[name]=number;clearTaskError();}
+          return;
+        }
         const number = Number(value);
         config[name] = Number.isFinite(number) ? Math.max(name === "budget" ? 0 : 5, Math.min(name === "budget" ? 100000 : 1440, Math.round(number))) : (name === "budget" ? 300 : 180);
         return;
       }
       config[name] = type === "checkbox" ? checked : value;
+      if(name==="mode"&&screen==="taskSetup")modeExplicit=true;
       if (name==="adult") {
         if(checked&&screen==="taskSetup")clearTaskError();
         const next=app.querySelector("#preferences-next");
@@ -1015,11 +1289,13 @@
       }
     } else if (Object.hasOwn(draft, name)) {
       draft[name] = type === "checkbox" ? checked : value;
+      if(task&&(name==="note"||name==="includeNote"))updateRegion("#export-preview",exportEvidencePreview());
       if (name === "accepted") {
         draft.confirmed = false;
         const error=app.querySelector("#share-error");
         if(error?.nodeType)error.textContent="";
         app.querySelector('[name="confirmed"]').checked = false;
+        refreshCardPreview();
       }
       if (name === "includeExperiment") refreshCardPreview();
     }
@@ -1128,12 +1404,13 @@
       const count=app.querySelector("#catalog-count");
       if (count?.nodeType) count.textContent=`${sceneCatalogCategory} · ${byCategory(sceneCatalogCategory).length}种`;
     } else setPressed("scene-choice",sceneCatalogSelected);
+    updateRegion("#catalog-preview",scenePreview(engine.sceneById(sceneCatalogSelected)));
     if (!updateRegion("#catalog-bar",catalogBar(),true)) show("sceneCatalog","",false);
   }
 
   let pendingDialog = "", pendingSuggestion=null, pendingRecord=-1, pendingAction=null;
   function useSuggestion(index,line) {
-    selectedDraft=index;suggestionText=utterance=line;retryTurn=null;
+    selectedDraft=index;suggestionText=utterance=line;if(!retryTurn?.uncertain)retryTurn=null;
     show("live","",false);
     const field=app.querySelector('[name="utterance"]');
     field?.focus();
@@ -1155,9 +1432,12 @@
     const leaving=kind==="leave";
     const extra={
       draft:["换成这句？","你已经写了一些内容。替换后会用新的草稿。","replace-draft","替换草稿"],
-      end:["现在结束并生成报告？","报告会用已提交的本场对话。对话较少时也可以查看原话。","finish-session","结束并看报告"],
+      end:["现在结束并看复盘？",utterance.trim()?"复盘只使用已发送的对话。输入框中的草稿还没发送。":"复盘会保留已发送的对话。你可以查看原话。","finish-session","结束并看复盘"],
+      replay:["从这个回合重演？","你可以换一种回应。原来的对话会保留在复盘中。","confirm-replay","开始重演"],
       action:["确认这个选择？",pendingAction?.label||"","submit-action","确认"],
       record:["删除这条摘要？","仅删除当前浏览器中的这条摘要。","confirm-record-delete","确认删除"],
+      "discard-edit":["放弃这次修改？","已应用到本场的设定会保留。","confirm-cancel-picker","放弃修改"],
+      "switch-task":["开始另一种练习？","当前未开始的准备将被替换。","confirm-switch-task","另开一场"],
     }[kind];
     dialog.innerHTML=extra?`<h2 id="flow-dialog-title">${extra[0]}</h2><p>${esc(extra[1])}</p><div class="buttons">${button("close-flow-dialog","返回","quiet")}${button(extra[2],extra[3],"primary")}</div>`:`<h2 id="flow-dialog-title">${leaving?"怎么离开现场？":"清空这场约会？"}</h2>
       <p>${leaving?"可以暂停后从首页回来，也可以直接结束并查看复盘。":"这场的原局、重演和关联自查摘要将被移除。已经下载的文件会保留。"}</p>
@@ -1235,11 +1515,10 @@
     }
     if (homeScene) {
       if (!engine.sceneById(homeScene)) return;
-      sceneCatalogSelected=homeScene;
-      sceneCatalogCategory=homeCategory;
-      sceneCatalogSource="已带入首页选择";
-      catalogFromPlan=false;
-      show("sceneCatalog");
+      homeSceneId=homeScene;
+      setPressed("home-scene",homeSceneId);
+      if(!updateRegion("#home-scene-preview",homeScenePreview()))show("cover","",false);
+      app.querySelector("#home-scene-preview h2")?.focus();
       return;
     }
     if (scene) {
@@ -1257,8 +1536,7 @@
     }
     if(target.dataset.taskGoal&&task&&screen==="taskSetup"){
       task.goal=target.dataset.taskGoal;
-      const field=app.querySelector('[name="task-goal"]');
-      if(field?.nodeType)field.value=task.goal;
+      task.moment=moments[goals.indexOf(task.goal)];
       setPressed("task-goal",task.goal);
       recommendTaskScene();
       clearTaskError();
@@ -1270,7 +1548,7 @@
       return;
     }
     if(target.dataset.draftIndex!==undefined && !busy){
-      const index=Number(target.dataset.draftIndex);const line=run.events.at(-1)?.suggestions?.[index];
+      const index=Number(target.dataset.draftIndex);const line=currentSuggestions()[index];
       if(!line)return;
       if(utterance.trim()&&utterance!==suggestionText&&utterance!==line){pendingSuggestion={index,line};openFlowDialog("draft",target);return;}
       return useSuggestion(index,line);
@@ -1280,15 +1558,20 @@
       if(pendingAction)openFlowDialog("action",target);
       return;
     }
-    if(target.dataset.evidenceReplay!==undefined&&original&&!alternative){
-      draft.selected=Number(target.dataset.evidenceReplay);session.sessionId=primarySessionId;return control("replay",{index:draft.selected});
+    if(target.dataset.evidenceReplay!==undefined&&original&&primarySessionId&&!sessionExpired){
+      const index=Number(target.dataset.evidenceReplay);
+      if(!Number.isInteger(index)||!original.events[index])return;
+      pendingReplay=index;
+      openFlowDialog("replay",target);
+      return;
     }
     if(target.dataset.recordRetry!==undefined){
       const item=savedRecords().find(row=>row.id===target.dataset.recordRetry);
       if(item&&!busy&&!suspended){
         reset(null);
         newTask(item.task.kind==="rehearsal"?"rehearsal":"practice");
-        task={...task,goal:item.task.goal,duration:item.task.duration||task.duration,style:item.task.style||task.style};
+        task={...task,goal:item.task.goal,duration:item.task.duration||task.duration,style:item.task.style||task.style,
+          moment:moments.includes(item.task.moment)?item.task.moment:undefined};
         const scene=engine.sceneById(item.scene);
         if(scene){config.scene=scene.id;taskSceneDefault=false;}else recommendTaskScene();
         show("taskSetup");
@@ -1393,29 +1676,104 @@
       return;
     }
     switch (go) {
-      case "new-rehearsal":newTask("rehearsal");break;
-      case "new-practice":newTask("practice");break;
-      case "task-custom":
+      case "continue-setup": if(task&&!run)show("taskSetup");break;
+      case "edit-role":case "edit-scene":
+        if(task&&screen==="taskSetup")openPicker(go==="edit-role"?"role":"scene",go);
+        break;
+      case "edit-custom-scene":openPicker("custom-scene",go);break;
+      case "cancel-picker":
+        if(["partner","custom-scene"].includes(picker?.kind))openFlowDialog("discard-edit",target);
+        else returnFromPicker();
+        break;
+      case "confirm-cancel-picker":
+        if(pendingDialog==="discard-edit"){closeFlowDialog();returnFromPicker();}
+        break;
+      case "apply-partner": {
+        if(picker?.kind!=="partner")break;
+        const result=window.DatingPartnerModel.validate(preparation.partnerSpec);
+        if(!result.valid){status.textContent=result.errors.join("；");break;}
+        const chosen=JSON.parse(JSON.stringify(preparation));
+        ensureTask();
+        appliedPartner=chosen;
+        preferredRoleId=null;
+        planIssue="";
+        if(picker)returnFromPicker(true);else show("taskSetup");
+        break;
+      }
+      case "apply-custom-scene": {
+        if(!sceneDraft||picker?.kind!=="custom-scene")break;
+        const spec={...sceneDraft};
+        for(const key of ["budget","duration"]){
+          if(spec[key]===""||spec[key]===undefined)delete spec[key];else spec[key]=Number(spec[key]);
+        }
+        try{window.DatingPreparationScenes.build(spec);}
+        catch(error){const feedback=app.querySelector("#scene-edit-error");if(feedback)feedback.textContent=error.message;break;}
+        const defaultId=window.DatingPreparationScenes.compatibilitySceneId(spec.template);
+        if(!defaultId)break;
+        ensureTask();
+        config.scene=defaultId;
+        appliedScene=spec;
+        taskSceneDefault=false;
+        planIssue="";
+        if(picker)returnFromPicker(true);else show("taskSetup");
+        break;
+      }
+      case "connection-help":{
+        const dialog=document.getElementById("connection-help");
+        if(dialog?.showModal&&!dialog.open){
+          dialog.addEventListener("close",()=>target.isConnected&&target.focus(),{once:true});
+          dialog.showModal();
+        }
+        break;
+      }
+      case "recheck-connection": {
+        const origin=screen;
+        const ready=await detectModel();
+        if(screen!==origin)break;
+        if(ready){failedScreen=null;connectionError="";}
+        show(screen,ready?"模型已配置，可以继续准备。":"自由聊天尚未连接。",false);
+        app.querySelector(ready?'[data-go="task-start"]':'.connection-note')?.focus();
+        break;
+      }
+      case "use-home-scene":
+        if(engine.sceneById(homeSceneId)){chooseForTask(homeSceneId);show("taskSetup");}
+        break;
+      case "new-rehearsal":requestTask("rehearsal",target);break;
+      case "new-practice":requestTask("practice",target);break;
+      case "confirm-switch-task":
+        if(pendingDialog==="switch-task"&&pendingKind){const kind=pendingKind;closeFlowDialog();newTask(kind);}
+        break;
+      case "task-custom":if(task&&screen==="taskSetup")openPicker("partner",go);break;
       case "task-start": {
         if(busy||!task)break;
-        const message=!task.goal.trim()?"先选一项想练的事，或写一句自己的情况。":!config.adult?"请先确认已年满18岁。":"";
-        if(message){status.textContent=message;const box=app.querySelector("#task-error");if(box)box.textContent=message;app.querySelector(task.goal.trim()?'[name="adult"]':'[name="task-goal"]')?.focus();break;}
-        if(task.kind==="rehearsal"){
-          if(go==="task-custom"){directPreparation=true;preparation.step=1;show("preparation");break;}
-          quickEntry=true;sceneFirst=true;show("roles");break;
+        const goal=task.goal.trim()||task.context?.trim();
+        const invalidBudget=setupNumbers.budget!==undefined&&setupNumbers.budget!==""&&Number(setupNumbers.budget)!==config.budget;
+        const invalidTime=setupNumbers.timeBudget!==undefined&&setupNumbers.timeBudget!==""&&Number(setupNumbers.timeBudget)!==config.timeBudget;
+        const message=!goal?"先选一项想练的事，或写一句自己的情况。":invalidBudget?"预算需在0至100000元之间。":invalidTime?"可用时间需是5至1440分钟之间的整数。":!config.adult?"请先确认已年满18岁。":"";
+        if(message){const box=app.querySelector("#task-error");if(box)box.textContent=message;app.querySelector(!goal?'[name="task-context"], [name="task-goal"]':invalidBudget?'[name="budget"]':invalidTime?'[name="timeBudget"]':'[name="adult"]')?.focus();break;}
+        const {role,config:next}=resolveSetup();
+        if(!role){
+          const scene=setupScene(), issue=scene&&sceneIssue(scene);
+          planIssue=issue?`${issue}。请换一个场景或调整预算与时间。`:"本场条件找不到可用的对象。请换对象、换地点，或调整更多设定。";
+          const box=app.querySelector("#task-error");if(box)box.textContent=planIssue;
+          break;
         }
+        const setupSnapshot=()=>JSON.stringify([config,task,appliedPartner,appliedScene,setupNumbers,checklist]);
+        const checkedSetup=setupSnapshot();
         if(target.nodeType)target.disabled=true;
         const ready=await detectModel();
         if(target.isConnected)target.disabled=false;
         if(screen!=="taskSetup")break;
         if(!ready){connectionFailed(go);break;}
+        if(checkedSetup!==setupSnapshot()){
+          const box=app.querySelector("#task-error");
+          if(box)box.textContent="本场设置刚有更新。请核对后再开始。";
+          break;
+        }
         failedScreen=null;
         if(screen!=="taskSetup")break;
-        const role=engine.match(config)[0]||engine.match({...config,mode:"spark"})[0];
-        if(!role){status.textContent="这里没有合适的角色，请换个场景。";break;}
-        if(role.modes&&!role.modes.includes(config.mode))config.mode="spark";
         modelMode=true;
-        return startDate(role);
+        return startDate(role,next);
       }
       case "saved-reviews": if(screen!=="live"&&!busy)show("savedReviews");break;
       case "legacy-journal":show("legacyJournal");break;
@@ -1429,7 +1787,10 @@
         if(!offline)break;
         const back=offline.from;
         offline=null;
-        show(back,"",true,{replace:true});
+        if(window.history?.state?.screen==="offlineView"){
+          focusAfterReturn="offline-practice";
+          window.history.back();
+        } else show(back,"",true,{replace:true});
         app.querySelector('[data-go="offline-practice"]')?.focus();
         break;
       }
@@ -1444,7 +1805,18 @@
         show("offlineView");
         break;
       }
-      case "request-end":openFlowDialog("end",target);break;
+      case "request-end":
+        if(sessionExpired){run={...run,phase:"ended"};return finish();}
+        openFlowDialog("end",target);break;
+      case "confirm-replay": {
+        if(pendingDialog!=="replay"||pendingReplay===null||!primarySessionId)break;
+        const index=pendingReplay;pendingReplay=null;closeFlowDialog();
+        return modelRequest("/api/control",{sessionId:primarySessionId,command:"replay",index},value=>{
+          draft.selected=index;modelOpening=value.opening||originalOpening;utterance="";triedTurn="";
+          retryTurn=null;polish=null;coachOpen=false;selectedDraft=-1;suggestionText="";liveError="";
+          show("live");
+        });
+      }
       case "finish-session":
         if(pendingDialog!=="end")break;
         closeFlowDialog();return control("end");
@@ -1468,7 +1840,11 @@
         break;
       case "retry-task": {
         const previous={...task};
-        newTask(previous.kind);task=previous;show("taskSetup");break;
+        const previousConfig={...config}, previousPartner=appliedPartner, previousScene=appliedScene, previousRole=preferredRoleId;
+        const previousPlan=checklist.plan;
+        reset(null);
+        task=previous;config={...previousConfig,adult:false};appliedPartner=previousPartner;appliedScene=previousScene;preferredRoleId=previousRole;
+        taskSceneDefault=false;checklist.plan=previousPlan;show("taskSetup");break;
       }
       case "polish": {
         if(polishRequest||busy||!session||!utterance.trim()){
@@ -1481,7 +1857,7 @@
         show("live","",false);
         try{
           const result=await api("/api/polish",active);
-          if(polishRequest===active&&screen==="live"&&utterance===source&&session.version===active.version)polish={source,line:result.line};
+          if(polishRequest===active&&screen==="live"&&session?.version===active.version)polish={source,line:result.line};
         }catch{
           if(polishRequest===active)status.textContent="暂时没能整理草稿，原文还在。";
         }finally{
@@ -1507,10 +1883,11 @@
         break;
       case "open-config":
       case "open-export":
+      case "open-share-card":
       case "open-checklist":
       case "open-stations":
       case "open-live-log": {
-        const id={"open-config":"config-options","open-export":"export-options","open-checklist":"checklist-options","open-stations":"stations","open-live-log":"live-log"}[go];
+        const id={"open-config":"config-options","open-export":"export-options","open-share-card":"share-card-options","open-checklist":"checklist-options","open-stations":"stations","open-live-log":"live-log"}[go];
         const dialog=document.getElementById(id);
         if(dialog?.showModal&&!dialog.open){
           dialog.addEventListener("close",()=>{if(target.isConnected)target.focus({preventScroll:true});},{once:true});
@@ -1529,7 +1906,7 @@
       }
       case "download-evidence":
         if(!original)break;
-        download(report.evidenceHtml(original,alternative,analysis,{...checklist,claimedAction:checklist.claimedAction??analysis?.findings?.[0]?.alternative,full:includeFull,includeNote:draft.includeNote,note:draft.note}),"本场复盘.html","text/html;charset=utf-8");
+        download(report.evidenceHtml(original,alternative,analysis,exportEvidenceOptions()),"本场复盘.html","text/html;charset=utf-8");
         const exportStatus=app.querySelector("#export-status");
         if(exportStatus?.nodeType)exportStatus.textContent="已开始下载HTML报告。";
         break;
@@ -1538,20 +1915,22 @@
         try {
           const id=original.runId;
           const history=readRecords().filter(item=>item.id!==id);
-          history.unshift({id,date:new Date().toLocaleDateString(),task:original.rehearsalTask,scene:original.initialScene||original.scene,summary:analysis?.findings?.[0]?.observation||`${original.events.length}回合练习`});
+          const {kind,goal,duration,style,moment}=original.rehearsalTask;
+          history.unshift({id,date:new Date().toLocaleDateString(),task:{kind,goal,duration,style,moment},scene:original.initialScene||original.scene,summary:analysis?.findings?.[0]?.observation||`${original.events.length}回合练习`});
           window.localStorage.setItem(recordKey,JSON.stringify(history.slice(0,50)));
           if(!updateRegion(".page-nav",navigation(),true))show("evidenceView","",false);
           status.textContent="已保存这次复盘。";
         } catch { status.textContent="无法保存本机摘要，可以下载回看。"; }
         break;
       case "home":
-        if (screen !== "live" && !busy) show("cover");
+        if (screen !== "live" && !busy) {picker=null;show("cover");}
         break;
       case "roles":
-        if (screen !== "live" && !busy) show("roles");
+        if (screen !== "live" && !busy) {picker=null;show("roles");}
         break;
       case "all-scenes":
         if (screen!=="live" && !busy && screen!=="sceneCatalog") {
+          picker=null;
           sceneCatalogSelected=null;sceneCatalogCategory="全部";sceneCatalogSource="";catalogFromPlan=false;
           show("sceneCatalog");
         }
@@ -1562,22 +1941,24 @@
         break;
       case "use-scene": {
         const scene=engine.sceneById(sceneCatalogSelected);
-        if (!scene || sceneIssue(scene)) break;
-        if (catalogFromPlan) {
-          config.scene=scene.id;
-          preparation.template=scene.id;
-          sceneFirst=true;
-          show("roles");
-        } else openSceneFirst(scene.id);
+        if (!scene) break;
+        chooseForTask(scene.id);
+        if(picker)returnFromPicker(true);else show("taskSetup");
         break;
       }
       case "choose-role": {
         const role=library.roles.find(item=>item.id===selectedRoleId);
         if(!role){status.textContent="先从列表里选一位角色。";break;}
+        if(quickEntry&&!task&&!picker){
+          preferredRoleId=role.id;
+          if(role.modes?.length&&!role.modes.includes(config.mode))config.mode=role.modes[0];
+          planIssue=explainPlan();show("settings");break;
+        }
+        ensureTask();
         preferredRoleId=role.id;
-        const adjusted=role.modes?.length&&!role.modes.includes(config.mode);
-        if(adjusted)config.mode=role.modes[0];
-        quickEntry=true;modelMode=false;planIssue=explainPlan();show("settings", adjusted?`${role.name}更适合「${modes[config.mode]}」，已为本场调整；可从更多偏好里改回来。`:"");
+        appliedPartner=null;
+        planIssue="";
+        if(picker)returnFromPicker(true);else show("taskSetup");
         break;
       }
       case "role-list":
@@ -1594,11 +1975,14 @@
         refreshRoles(true);app.querySelector('[name="role-search"]')?.focus({preventScroll:true});
         break;
       case "random-role": {
-        const wasRecovery=Boolean(planIssue);
-        if (preferredRoleId && !["man","woman"].includes(config.player)) config.presentation="unspecified";
-        preferredRoleId=null;quickEntry=true;modelMode=false;
-        if (wasRecovery && !showPlanIssue()) { confirming=true;show("preferences","将按当前场景与偏好重新匹配。"); }
-        else if (!wasRecovery) show("settings");
+        const visible=new Set(filteredRoles().map(role=>role.id));
+        const eligible=engine.match({...config,adult:true,sceneSpec:appliedScene||undefined}).filter(role=>visible.has(role.id));
+        if(!eligible.length){status.textContent="当前条件下没有可推荐的角色。可以调整筛选或更换场景。";break;}
+        const candidates=eligible.filter(role=>role.id!==selectedRoleId);
+        const pool=candidates.length?candidates:eligible;
+        selectedRoleId=pool[Math.floor(secureRandom()*pool.length)].id;
+        roleDetailOpen=true;
+        refreshRoles();
         break;
       }
       case "continue-plan":
@@ -1627,7 +2011,7 @@
       case "home-practice":
         return openOffline(screen);
       case "journal":
-        if (screen !== "live" && !busy) newTask("practice");
+        if (screen !== "live" && !busy) requestTask("practice",target);
         break;
       case "reroll":
         if (!homeRerolling && byCategory(homeCategory).length>1) {
@@ -1646,9 +2030,8 @@
         quickEntry = true; modelMode = false;show("roles");
         break;
       case "custom-entry":
-        directPreparation = true;
-        preparation.step = 1;
-        show("preparation");
+        if(screen==="roles")openPicker("partner",go);
+        else { directPreparation=true;preparation.step=1;show("preparation"); }
         break;
       case "start-model": {
         if (!/^https?:$/.test(window.location?.protocol || "")) { status.textContent = "模型自由互动需要通过本地服务打开网页。"; break; }
@@ -1667,7 +2050,7 @@
       case "radar-coach": return radar.coach(false);
       case "radar-preflight": return radar.coach(true);
       case "save-home": if(await radar.save()){reset(); status.textContent="已保存本场自查摘要。";} break;
-      case "send": if (utterance.trim()) return sendModel({text:utterance.trim()}); break;
+      case "send": if (utterance.trim()||retryTurn?.uncertain) return sendModel({text:utterance.trim()}); break;
       case "cancel": return control("cancel");
       case "lower-mode": {
         const index = Object.keys(modes).indexOf(run.mode || config.mode);
@@ -1776,7 +2159,7 @@
         download(report.html(original, alternative, exportDraft()), "散场之后.html", "text/html;charset=utf-8");
         break;
       case "download-card": {
-        const image = report.card(original, {...exportDraft(), ...(task&&original.events.length&&draft.selected===null?{selected:0}:{})}, alternative);
+        const image = report.card(original, cardOptions(), alternative);
         if (image) download(image, "个人 Dating 卡.svg", "image/svg+xml;charset=utf-8");
         else if(task){
           const message="请先填写一句自己的感受并确认，避免包含姓名、联系方式或引用台词。";
@@ -1813,13 +2196,12 @@
   if(openingPage==="#journal")newTask("practice");
   if(openingPage==="#savedReviews")show("savedReviews","",true,{replace:true});
   if(openingPage==="#legacyJournal")show("legacyJournal","",true,{replace:true});
-  if(window.location){
-    const connection=/^https?:$/.test(window.location.protocol||"")?api("/api/config").then(result=>!!result.available,()=>false):Promise.resolve(false);
-    connection.then(ready=>{
-      homeConnection=ready;
-      if(screen==="cover"&&!suspended)updateRegion("#home-connection",connectionOptions(true));
-    });
-  }
+  readConnection().then(connection=>{
+    if(homeConnection!==null)return;
+    homeConnection=connection;
+    if(screen==="cover"&&!suspended)updateRegion("#home-connection",connectionOptions(true));
+    if(screen==="taskSetup")updateRegion("#setup-connection",connectionOptions());
+  });
   radar.hasSavedNotes().then(found=>{legacyNotes=found;},()=>{legacyError=true;}).finally(()=>{
     if((legacyNotes||legacyError)&&["cover","savedReviews"].includes(screen)&&app.nodeType)updateRegion(".page-nav",navigation(),true);
   });

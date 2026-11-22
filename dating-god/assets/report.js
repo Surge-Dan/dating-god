@@ -114,17 +114,20 @@ ${note ? `<text font-size="22" fill="#671f35" font-family="sans-serif">${wrap(no
   function evidenceReport(run,branch,value,draft={}) {
     const {findings}=validateAnalysis(run,value);
     const selected=run.events[draft.selected];
-    const scenes=engine.resolveScene(run);
+    const scene=engine.resolveScene(run,run.initialScene||run.scene);
     const task=run.rehearsalTask;
-    const snippets=findings.map(item=>`<article class="evidence-item"><p class="meta">第${item.turn}回合 · ${escape(item.dimension)}</p><h3>${escape(item.observation)}</h3><blockquote class="evidence-quotes"><p><strong>你</strong> ${escape(item.quote)}</p><p><strong>TA</strong> ${escape(item.partnerQuote)}</p></blockquote><p>可以试着说「${escape(item.alternative)}」</p>${draft.actions&&draft.canReplay!==false?`<button class="quiet" type="button" data-evidence-replay="${item.turn-1}">从这句再练</button>`:""}</article>`).join("");
+    const firstSpeech=run.events.findIndex(event=>event.inputType!=="action"&&event.label&&event.reply);
+    const firstExchange=run.events[firstSpeech];
+    const replayButton=index=>draft.actions&&draft.canReplay!==false?`<button class="quiet" type="button" data-evidence-replay="${index}">从这句再试</button>`:"";
+    const snippets=findings.map(item=>`<article class="evidence-item"><p class="meta">第${item.turn}回合 · ${escape(item.dimension)}</p><h3>${escape(item.observation)}</h3>${draft.actions||draft.full?`<blockquote class="evidence-quotes"><p><strong>你</strong> ${escape(item.quote)}</p><p><strong>TA</strong> ${escape(item.partnerQuote)}</p></blockquote>`:""}<p>可以试着说「${escape(item.alternative)}」</p>${replayButton(item.turn-1)}</article>`).join("");
     const rows=dimensions.map(name=>({name,count:findings.filter(item=>item.dimension===name).length})).filter(item=>item.count);
-    return `<section class="evidence-summary"><p>${escape(task.goal)} · ${escape(scenes.name)} · ${run.events.length}回合</p>
-      ${snippets||`<p>${run.events.length<3?"这场可观察的对话还比较少。可以回看原话，或再练一小段。":draft.pending?"正在整理可以回看的关键时刻。":"暂时没有可核对的分析。可以先看原话。"} </p>`}
+    return `<section class="evidence-summary"><p>${escape(task.goal)}${draft.actions?` · ${escape(engine.resolveRole(run)?.name||"")}`:""} · ${escape(scene.name)} · ${run.events.length}回合</p>
+      ${snippets||`<p>${!run.events.length?"本场还没有已发送的回复。":draft.pending?"正在整理复盘。":"暂时没有可核对的分析。"}</p>${draft.actions&&firstExchange?`<article class="evidence-item"><h3>第${firstSpeech+1}回合原话</h3><blockquote class="evidence-quotes"><p><strong>你</strong> ${escape(firstExchange.label)}</p><p><strong>TA</strong> ${escape(firstExchange.reply)}</p></blockquote>${replayButton(firstSpeech)}</article>`:""}`}
       ${rows.length&&task.duration!=="short"?`<section class="observation-chart"><h2>本场观察 · ${findings.length}条有原话的发现</h2><ul>${rows.map(item=>`<li><span>${item.name}</span><meter min="0" max="${findings.length}" value="${item.count}" aria-label="${item.name}">${item.count}</meter><span>${item.count}条</span></li>`).join("")}</ul><p>其余维度本场未充分观察。条数只表示报告覆盖范围。</p></section>`:""}
       ${task.kind==="rehearsal"?`<section class="action-checklist"><h2>赴约前准备</h2><p>按这次模拟整理，真实安排请与对方确认。</p>${draft.plan?`<p><strong>你填的已确认安排</strong>　${escape(draft.plan)}</p>`:""}
         ${[["claimedAction","我想试的做法"],["question","我想确认的问题"],["fallback","如果计划变了"]].map(([key,label])=>`<p><strong>${label}</strong>　${escape(draft[key]||"待填写")}</p>`).join("")}</section>`:""}
-      ${branch?.phase==="ended"?`<section><h2>同一刻的两种说法</h2><p>起点：第${branch.branchFrom+1}回合</p><p>原场：${escape(run.events[branch.branchFrom]?.label||"")} · ${escape(run.events[branch.branchFrom]?.reply||"")}</p><p>重演：${escape(branch.events[branch.branchFrom]?.label||"还没有新发言")} · ${escape(branch.events[branch.branchFrom]?.reply||"")}</p></section>`:""}
-      ${draft.full&&run.events.length?`<section><h2>完整对话</h2><ol>${timeline(run.events)}</ol></section>`:""}
+      ${branch?.phase==="ended"&&(draft.actions||draft.full)?`<section><h2>同一刻的两种说法</h2><p>起点：第${branch.branchFrom+1}回合</p><p>原场：${escape(run.events[branch.branchFrom]?.label||"")} · ${escape(run.events[branch.branchFrom]?.reply||"")}</p><p>重演：${escape(branch.events[branch.branchFrom]?.label||"还没有新发言")} · ${escape(branch.events[branch.branchFrom]?.reply||"")}</p></section>`:""}
+      ${draft.full&&run.events.length?`<section><h2>完整对话</h2>${draft.opening?`<p><strong>TA</strong> ${escape(draft.opening)}</p>`:""}<ol>${timeline(run.events)}</ol></section>`:""}
       ${selected&&draft.actions?`<p>已选第${draft.selected+1}回合</p>`:""}
       ${draft.includeNote&&draft.note?`<section><h2>私人便笺</h2><p>${escape(draft.note)}</p></section>`:""}
       </section>`;

@@ -58,6 +58,52 @@ function openPage(overrides = {}) {
   };
 }
 
+test("selection returns to preparation and preserves the adopted scene across role filters", async () => {
+  const page = openPage();
+  const go = id => page.click({go:id});
+  await go("all-scenes");
+  await page.click({sceneChoice:"A08"});
+  await go("use-scene");
+  assert.match(page.view.innerHTML, /<h1[^>]*>本场准备/);
+  assert.match(page.view.innerHTML, /公园散步/);
+  await go("edit-role");
+  await page.click({role:"R01"});
+  page.input("role-search","完全没有这个名字");
+  assert.match(page.view.innerHTML,/当前筛选未显示/);
+  await go("choose-role");
+  assert.match(page.view.innerHTML, /<h1[^>]*>本场准备/);
+  assert.match(page.view.innerHTML, /公园散步/);
+  assert.match(page.view.innerHTML, /林澈/);
+});
+
+test("moment choices and free context are stored separately and open the selected moment", async () => {
+  let setup;
+  const engine=require("../dating-god/assets/engine.js");
+  const page=openPage({window:{location:{protocol:"http:"}},fetch:async(path, request)=>{
+    const json=value=>({ok:true,json:async()=>value});
+    if(path==="/api/config")return json({available:true,status:"configured"});
+    if(path==="/api/session"){
+      setup=JSON.parse(request.body);
+      const run=engine.createRun(setup.config,setup.roleId);
+      run.rehearsalTask=setup.task;
+      return json({sessionId:"moment",version:0,run,opening:{line:"要不要我送你？",detail:"准备分别"}});
+    }
+    throw Error(path);
+  }});
+  await page.click({go:"new-practice"});
+  page.input("task-context","我想自己回家");
+  await page.click({taskGoal:"不知道怎么结束"});
+  await page.click({go:"home"});
+  await page.click({go:"continue-setup"});
+  assert.match(page.view.innerHTML,/我想自己回家/);
+  page.input("adult",true);
+  await page.click({go:"task-start"});
+  assert.equal(setup.task.context,"我想自己回家");
+  assert.equal(setup.task.moment,"close");
+  assert.match(page.view.innerHTML,/要不要我送你/);
+  assert.match(page.view.innerHTML,/textarea name="utterance"/);
+});
+
 test("page gates blind dates, renders a replay, and downloads exactly what it previews", async () => {
   const page = openPage();
   const go = (id) => page.click({ go: id });
@@ -118,31 +164,29 @@ test("recommended scene is replaceable before opening and the role library start
   const content=require("../dating-god/assets/content.js");
   assert.ok(food.every(id=>content.scenes.find(scene=>scene.id===id).category==="吃喝"));
   await page.click({homeScene:food[0]});
-  assert.match(page.view.innerHTML,/已带入首页选择/);
-  await go("use-scene");
-  assert.match(page.view.innerHTML,/已选场景/);
+  assert.match(page.view.innerHTML,/用这个场景准备一场/);
+  assert.match(page.view.innerHTML,/约会预演/);
+  await go("use-home-scene");
+  assert.match(page.view.innerHTML,/本场准备/);
   await go("home");
   assert.deepEqual(group(),food);
-  go("all-scenes");
+  await go("all-scenes");
   assert.match(page.view.innerHTML, /电影院/);
-  page.click({sceneChoice:"S02"});
+  await page.click({sceneChoice:"S02"});
   assert.match(page.view.innerHTML, /咖啡／茶饮/);
-  go("use-scene");
-  assert.match(page.view.innerHTML, /角色库/);
+  await go("use-scene");
+  assert.match(page.view.innerHTML, /本场准备/);
+  await go("edit-role");
   await page.click({role:"R01"});
   assert.match(page.view.innerHTML, /林澈/);
   await go("choose-role");
-  assert.match(page.view.innerHTML, /安排这一场/);
+  assert.match(page.view.innerHTML, /本场准备/);
   assert.match(page.view.innerHTML, /林澈/);
-  await go("confirm-preferences");
-  assert.match(page.view.innerHTML, /确认偏好/);
-  await go("match");
-  assert.match(page.status.textContent, /年满 18 岁/);
+  await go("task-start");
+  assert.match(page.view.querySelector("#task-error").textContent, /年满 ?18 ?岁/);
   page.input("adult", true);
-  await go("match");
-  assert.match(page.view.innerHTML, /林澈/);
-  await go("meet");
-  assert.match(page.status.textContent, /自由聊天暂时不可用/);
+  await go("task-start");
+  assert.match(page.view.innerHTML, /自由聊天需要本地服务/);
   assert.doesNotMatch(page.view.innerHTML, /name="utterance"/);
 });
 
@@ -164,8 +208,9 @@ test("scene catalog, new practice, and archived notes stay separate", async () =
   page.click({sceneCategory:"户外"});
   assert.match(page.view.innerHTML,/data-scene-choice="A08" aria-pressed="true"/);
   go("use-scene");
-  assert.match(page.view.innerHTML, /角色库/);
+  assert.match(page.view.innerHTML, /本场准备/);
   await go("journal");
+  await go("confirm-switch-task");
   assert.match(page.view.innerHTML, /挑一个你想练的瞬间/);
   assert.doesNotMatch(page.view.innerHTML, /旧版|我的记录/);
   await go("legacy-journal");
@@ -475,7 +520,7 @@ test("custom entry keeps the object draft and can start a built-in scene with no
   assert.match(page.view.innerHTML, /公园散步/);
   page.input("adult",true);
   await go("prep-auto");
-  assert.match(page.view.innerHTML,/自由聊天暂时不可用/);
+  assert.match(page.view.innerHTML,/自由聊天需要本地服务/);
   await go("prep-offline");
   assert.match(page.view.innerHTML, /小棠 · 公园公共东门/);
 });
@@ -545,10 +590,10 @@ test("short practice and offline fallback share a draft without opening old note
   assert.doesNotMatch(page.view.innerHTML, /<details|练习记录|固定示例/);
   await page.click({go:"new-practice"});
   assert.match(page.view.innerHTML, /挑一个你想练的瞬间/);
-  page.input("task-goal","我想早点回家");
+  page.input("task-context","我想早点回家");
   page.input("adult",true);
   await page.click({go:"task-start"});
-  assert.match(page.view.innerHTML, /先练一段收尾/);
+  assert.match(page.view.innerHTML, /看收尾演练示例/);
   await page.click({go:"offline-practice"});
   assert.match(page.view.innerHTML, /怎么自然收尾/);
   assert.doesNotMatch(page.view.innerHTML, /radar-host/);
@@ -559,10 +604,10 @@ test("short practice and offline fallback share a draft without opening old note
   assert.match(page.view.innerHTML, /我想早点回家/);
 });
 
-test("saved reviews are discoverable only where there is something to review", async () => {
+test("saved reviews have a stable navigation entry and show saved summaries", async () => {
   const row={id:"x",date:"今天",task:{kind:"practice",goal:"表达不同意见"},scene:"S02",summary:"我说出了自己的想法"};
   const page=openPage({window:{localStorage:{getItem:()=>JSON.stringify([row])}}});
-  assert.match(page.view.innerHTML, /已保存复盘/);
+  assert.match(page.view.innerHTML, /data-go="saved-reviews"[^>]*>复盘/);
   await page.click({go:"saved-reviews"});
   assert.match(page.view.innerHTML, /我说出了自己的想法/);
   assert.doesNotMatch(page.view.innerHTML, /去练习|我的记录|查看旧版练习笔记/);
