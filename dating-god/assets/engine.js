@@ -196,7 +196,9 @@
       if(action.type === 'station') { next.pendingStation=action.station;next.closed=[...run.closed,'station-offer'];reply=`可以，我还有时间。一起去${sceneById(action.station).name}？你确定的话我们再出发。`; }
       else if(action.type === 'station-cancel') {next.pendingStation=null;reply='好，先在这儿待着。';}
       else { const target=resolveScene(run,run.pendingStation);if(!target)return run;next.scene=target.id;next.location=target.place;next.node='start';next.activityState={...(target.initialState||{})};next.stations=[...(run.stations||[run.scene]),target.id];next.elapsed=run.elapsed+5;next.spent=(run.spent||0)+(target.cost||0);next.pendingStation=null;reply='走吧，那我们一起过去。';detail=target.intro; }
-      next.events=[...run.events,{eventId,canonicalEventId:eventId,action:id,label:action.label,reply,detail,effect:action.type==='station-confirm'?'双方确认第二站并抵达':'第二站尚待双方确认',tags:[],before:snapshot(run)}];return next;
+      const stationStatus = action.type==='station-confirm' ? 'executed' : action.type==='station-cancel' ? 'cancelled' : 'requested';
+      const stationEffect = action.type==='station-confirm' ? '双方确认第二站并抵达' : action.type==='station-cancel' ? '第二站提议已撤回，双方留在原地' : '第二站尚待双方确认';
+      next.events=[...run.events,{eventId,canonicalEventId:eventId,action:id,label:action.label,reply,detail,effect:stationEffect,executionStatus:stationStatus,tags:[],before:snapshot(run)}];return next;
     }
     next.activityState={...(run.activityState||{}),...(action.patch||{})};
     next.spent=(run.spent||0)+(action.cost||0);
@@ -287,12 +289,14 @@
     if (action.tags?.includes("relationship") && action.id === "define") {
       effect = "角色表达了看法，后续关系仍待双方商量";
     }
+    const timeShort = run.elapsed + elapsed > (run.limit ?? role.limit);
     next.elapsed = Math.min(run.elapsed + elapsed, run.limit ?? role.limit);
     if (next.phase === "live" && next.elapsed >= (run.limit ?? role.limit)) {
       detail = [detail, `对方看了一眼时间，拿起随身的东西，准备${reason}。`].filter(Boolean).join(" ");
       next.phase = "ended";
       next.proposal = null;
       next.outcome = "见面时间到了，双方各自离开。";
+      if (timeShort) effect = `${effect}；实际相处${next.elapsed - run.elapsed}分钟，不足原计划的${elapsed}分钟，提前散场`;
     }
     if(run.partnerSnapshot) {
       const model=partnerModule();

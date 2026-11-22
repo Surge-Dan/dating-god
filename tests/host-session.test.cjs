@@ -106,7 +106,7 @@ test('custom perler workflow shares engine state and replay preserves original e
 });
 
 test('host coaching uses evidence and reports are escaped with explicit card confirmation',()=>{
-  const prepared=prepare(start());
+  const prepared=prepare(start({radarEnabled:true}));
   let state=runtime.dispatch(prepared.state,'commit',{version:0,requestId:'q1',result:reply}).state;
   const coaching=runtime.dispatch(state,'coach',{});
   assert.ok(coaching.view.rules.length>0);

@@ -618,3 +618,101 @@ test("saved reviews have a stable navigation entry and show saved summaries", as
  await page.click({go:'new-rehearsal'});page.input('adult',true);await page.click({go:'task-custom'});
  assert.match(page.view.innerHTML,/设置本场对象/);
  });
+
+test("home offers a lightweight offline sample entry", async()=>{
+ const page=openPage();
+ assert.match(page.view.innerHTML,/2分钟的收尾示例/);
+ await page.click({go:"offline-practice"});
+ assert.match(page.view.innerHTML,/收尾短练/);
+});
+
+test("live view uses unified exit wording", async()=>{
+ const page=openPage();
+ await page.click({go:"start"});
+ page.input("adult",true);
+ await page.click({go:"blind"});
+ assert.match(page.view.innerHTML,/结束并复盘/);
+ assert.match(page.view.innerHTML,/清空本场/);
+ assert.doesNotMatch(page.view.innerHTML,/提前散场|删除本场会话/);
+});
+
+test("free practice shows a status bar and aggregates second-station offers", async()=>{
+ const engine=require("../dating-god/assets/engine.js");
+ const {freeCandidate}=require("../dating-god/scripts/turn-contract.cjs");
+ let current;
+ const page=openPage({window:{location:{protocol:"http:"}},fetch:async(path,request)=>{
+   const json=(value,ok=true)=>({ok,json:async()=>value});
+   if(path==="/api/config")return json({available:true,status:"configured"});
+   if(path==="/api/session"){
+     const setup=JSON.parse(request.body);
+     const run=engine.createRun(setup.config,setup.roleId);
+     run.rehearsalTask=setup.task;
+     current={sessionId:"ui-session",version:0,run};
+     return json({...current,opening:{line:"我刚到，你也是刚过来吗？",detail:"你们刚碰面"}});
+   }
+   if(path==="/api/turn"){
+     current={sessionId:"ui-session",version:current.version+1,run:freeCandidate(current.run,"随便聊聊")};
+     return json(current);
+   }
+   throw Error(path);
+ }});
+ await page.click({go:"new-practice"});
+ await page.click({taskGoal:"刚坐下不知道说什么"});
+ page.input("adult",true);
+ await page.click({go:"task-start"});
+ for(const text of ["第一句","第二句"]){page.input("utterance",text);await page.click({go:"send"});}
+ assert.match(page.view.innerHTML,/剩约\d+分钟/);
+ assert.match(page.view.innerHTML,/新手尝鲜/);
+ assert.match(page.view.innerHTML,/data-go="open-stations"/);
+ assert.match(page.view.innerHTML,/<dialog class="content-dialog" id="stations"/);
+ const inline=page.view.innerHTML.split('<details class="setup-details">')[1]?.split('</details>')[0]||"";
+ assert.doesNotMatch(inline,/data-confirm-action="station:/);
+ const dialog=page.view.innerHTML.split('id="stations"')[1]||"";
+ assert.match(dialog,/data-confirm-action="station:/);
+});
+
+test("D3: a lost response syncs the authoritative version before the next turn", async()=>{
+ const engine=require("../dating-god/assets/engine.js");
+ const turnBodies=[];
+ let opened;
+ const page=openPage({window:{location:{protocol:"http:"}},fetch:async(path,request)=>{
+   const json=(value,ok=true)=>({ok,json:async()=>value});
+   if(path==="/api/config")return json({available:true,status:"configured"});
+   if(path==="/api/session"){
+     const setup=JSON.parse(request.body);
+     const run=engine.createRun(setup.config,setup.roleId);
+     run.rehearsalTask=setup.task;
+     opened={sessionId:"sync-session",version:0,run};
+     return json({...opened,opening:{line:"我刚到，你也是刚过来吗？",detail:"你们刚碰面"}});
+   }
+   if(path==="/api/turn"){
+     const body=JSON.parse(request.body);
+     turnBodies.push(body);
+     if(turnBodies.length===1)throw Error("network down");
+     return json({sessionId:"sync-session",version:2,run:{...opened.run,elapsed:8}});
+   }
+   if(path==="/api/control"){
+     const body=JSON.parse(request.body);
+     if(body.command==="status")return json({sessionId:"sync-session",version:1,run:{...opened.run,elapsed:4},pending:false,committed:false});
+   }
+   throw Error(path);
+ }});
+ await page.click({go:"new-practice"});
+ await page.click({taskGoal:"刚坐下不知道说什么"});
+ page.input("adult",true);
+ await page.click({go:"task-start"});
+ page.input("utterance","你好，很高兴见到你");
+ await page.click({go:"send"});
+ assert.equal(turnBodies.length,1);
+ await page.click({go:"send"});
+ assert.equal(turnBodies.length,2);
+ assert.equal(turnBodies[1].version,1);
+});
+
+test("mobile navigation keeps practice entry and role profile uses a bottom sheet",()=>{
+ const css=require("node:fs").readFileSync(require("node:path").resolve(__dirname,"../dating-god/assets/style.css"),"utf8");
+ assert.ok(!/button\[data-go="journal"\]\s*\{\s*display:\s*none/.test(css));
+ assert.match(css,/\.role-profile\.profile-open\s*\{[^}]*transform/);
+ assert.match(css,/--ink-secondary:/);
+ assert.match(css,/--shadow-2:/);
+});

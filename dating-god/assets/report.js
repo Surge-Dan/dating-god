@@ -51,6 +51,7 @@
     const note = draft.includeNote === true && draft.note?.trim() ? draft.note.trim().slice(0, 600) : "";
     const expectation = draft.includeExpectation === true && draft.expectation?.trim() ? draft.expectation.trim().slice(0, 320) : "";
     const replay = branch?.phase === "ended" ? branch.events.slice(branch.branchFrom) : null;
+    const full = draft.full === true || draft.includeFull === true;
     return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>散场之后 · ${escape(scene.name)}</title><style>
@@ -65,8 +66,8 @@ blockquote{margin:.5em 0;padding-left:.8em;border-left:2px solid #a05764}p{white
 ${run.preparation ? `<section><h2>赴约准备</h2><p>对象和地点为本次模拟假设，不预测真人；地点营业、价格与预约未核实。</p><p>准备重点：${escape(run.preparation.focus || run.preparation.brief || '观察具体互动，确认彼此条件')}</p><p>关键未知：${escape(run.preparation.unknowns || '对象当次意愿仍需向真人确认')}</p><p>下次做法：${escape(run.preparation.claimedAction || '先问清对方想法，再提出可选择的安排')}</p><p>需要确认：${escape(run.preparation.question || '对方本次的时间、预算和活动意愿是什么？')}</p><p>备选：${escape(run.preparation.fallback || '对方不想续摊时，在公共路口道别。')}</p></section>` : ''}
 ${expectation ? `<section><h2>赴约前的期待</h2><p>${escape(expectation)}</p></section>` : ""}
 ${selected ? `<section><h2>选中的一刻</h2><ul>${timeline([selected])}</ul></section>` : ""}
-<section><h2>现场记录</h2>${run.events.length ? `<ol>${timeline(run.events)}</ol>` : "<p>没有可引用的互动。可以留一个自问：我原本想体验怎样的见面？</p>"}</section>
-${replay ? `<section><h2>实际重演</h2><p>从原场第 ${branch.branchFrom + 1} 回合前开始。</p>${replay.length ? `<ol>${timeline(replay)}</ol>` : ""}<p>${escape(branch.outcome)}</p></section>` : ""}
+<section><h2>现场记录</h2>${run.events.length ? (full ? `<ol>${timeline(run.events)}</ol>` : `<p>本场共 ${run.events.length} 回合。默认仅下载摘要；勾选“包含完整对话”后可导出逐回合原话。</p>`) : "<p>没有可引用的互动。可以留一个自问：我原本想体验怎样的见面？</p>"}</section>
+${replay ? `<section><h2>实际重演</h2><p>从原场第 ${branch.branchFrom + 1} 回合前开始。</p>${full && replay.length ? `<ol>${timeline(replay)}</ol>` : ""}<p>${escape(branch.outcome)}</p></section>` : ""}
 ${note ? `<section><h2>你选择写入的私人便笺</h2><p>${escape(note)}</p></section>` : ""}
 <section><h2>带走的一点发现</h2><p>${escape(reflection || (selected ? "这一刻，你在意的是对方给的答案，还是你可以自在地说出自己的选择？" : "如果再试一次，你想先留意什么？"))}</p>
 ${nextExperiment ? `<h2>下次可试的小动作</h2><p>${escape(nextExperiment)}</p>` : ""}</section>
@@ -105,6 +106,7 @@ ${note ? `<text font-size="22" fill="#671f35" font-family="sans-serif">${wrap(no
       const event=run.events[item.turn-1];
       if(!event||event.inputType==="action"||!["quote","partnerQuote","observation","alternative"].every(key=>typeof item[key]==="string"&&item[key].trim()&&item[key].length<=260))continue;
       if(!event.label?.includes(item.quote)||!event.reply?.includes(item.partnerQuote)||seen.has(item.turn))continue;
+      if([item.quote,item.partnerQuote].some(quote=>quote.trim().length>=12&&(item.observation.includes(quote)||item.alternative.includes(quote))))continue;
       seen.add(item.turn);
       findings.push({turn:item.turn,dimension:item.dimension,quote:item.quote,partnerQuote:item.partnerQuote,observation:item.observation,alternative:item.alternative});
     }

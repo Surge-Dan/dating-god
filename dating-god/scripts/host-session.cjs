@@ -13,7 +13,7 @@ const radar = require('../assets/radar-core.js');
 const report = require('../assets/report.js');
 const { MODES, MAX_INPUT, SCHEMA, SEMANTIC_SCHEMA, bad, conflict, copy, exactKeys,
   validateSetup, proposalActions, semanticActions, assertConsistentOutput,
-  messagesFor, freeCandidate, decidePartner } = require('./turn-contract.cjs');
+  messagesFor, freeCandidate, decidePartner, radarEnabled } = require('./turn-contract.cjs');
 const LIMIT = 8 * 1024 * 1024;
 const canonical = value => JSON.stringify(value, function (_key, item) {
   return item && typeof item==='object' && !Array.isArray(item)
@@ -94,7 +94,7 @@ function dispatch(source,command,input={}) {
     const roleId=input.roleId ?? matches[0]?.id;
     if(typeof roleId!=='string' || !matches.some(r=>r.id===roleId)) throw bad('没有满足对象、场景、时间与预算条件的人物，请调整配置。');
     const run=engine.createRun(cfg,roleId);
-    run.radarEnabled=cfg.radarEnabled!==false;
+    run.radarEnabled=radarEnabled(cfg.radarEnabled);
     run.preparation=copy(cfg.preparation||{});
     const state={schemaVersion:1,sessionId:randomUUID(),version:0,run,opening:engine.opening(run),original:null,replayUsed:false,pending:null,receipts:[],cancelled:[]};
     return {state,view:view(state)};
@@ -110,9 +110,9 @@ function dispatch(source,command,input={}) {
     return {state,view:input.candidates===undefined?{snapshot,rules,coverage:'等待宿主依据原话和正常反例检查，未检查不等于没有问题。'}:{evaluation:radar.validateCandidates(input.candidates,snapshot,rules)}};
   }
   if(command==='export') {
-    exactKeys(input,['selected','accepted','confirmed','note','includeNote','expectation','includeExpectation','nickname','includeExperiment']);
+    exactKeys(input,['selected','accepted','confirmed','note','includeNote','expectation','includeExpectation','nickname','includeExperiment','includeFull']);
     if(run.phase!=='ended') throw conflict('先散场再生成回看。');
-    if(Object.entries(input).some(([k,v])=>['confirmed','includeNote','includeExpectation','includeExperiment'].includes(k)?typeof v!=='boolean':k==='selected'?!Number.isInteger(v):typeof v!=='string'||v.length>1200)) throw bad('回看确认信息无效。');
+    if(Object.entries(input).some(([k,v])=>['confirmed','includeNote','includeExpectation','includeExperiment','includeFull'].includes(k)?typeof v!=='boolean':k==='selected'?!Number.isInteger(v):typeof v!=='string'||v.length>1200)) throw bad('回看确认信息无效。');
     const original=state.original||run, branch=state.original?run:null;
     const accepted=report.claim(original,input,branch);
     return {state,view:{html:report.html(original,branch,input),card:accepted?report.card(original,input,branch):null}};

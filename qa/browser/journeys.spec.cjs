@@ -38,6 +38,22 @@ test('partner lock changes only its fill on pointer selection and keeps keyboard
  await expect(lock).toBeFocused();
  expect((await appearance()).outline).toBe('solid');
 });
+test('mobile navigation keeps practice reachable and the role sheet returns focus',async({page})=>{
+ await page.setViewportSize({width:320,height:720});
+ await page.goto('/');
+ await expect(page.locator('.page-nav [data-go=journal]')).toBeVisible();
+ await page.locator('.page-nav [data-go=roles]').click();
+ await page.locator('[data-role=R01]').click();
+ const toggle=page.locator('#role-confirm-bar [data-go=role-list]');
+ await toggle.click();
+ const profile=page.locator('#role-details');
+ await expect(profile.getByRole('heading',{name:'林澈'})).toBeFocused();
+ await expect(profile.locator('[data-go=choose-role-profile]')).toBeVisible();
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+ await profile.locator('[data-go=role-list-close]').click();
+ await expect(toggle).toBeFocused();
+ await expect(profile).toBeHidden();
+});
 test('offline example preserves the draft and requires explicit submission',async({page})=>{
  await page.goto('/');await page.locator('[data-go=new-practice]').click();await page.locator('[name=task-context]').fill('我想自己回家');await page.locator('[name=adult]').check();
  await page.locator('[data-go=offline-practice]').click();await expect(page.locator('.messages')).not.toContainText('TA · TA');
@@ -73,6 +89,9 @@ test('one confirmed free-text turn supports replay, recovery and private export'
  const branch='我想一个人走到地铁站，谢谢！';
  try {await page.goto(app.url);await go('new-practice').click();await page.locator('[data-task-goal="不知道怎么结束"]').click();await page.locator('[name=task-context]').fill('这个私密背景不该进报告');await page.locator('[name=adult]').check();await go('task-start').click();
  await expect(page.locator('.messages')).toContainText('要不要我送你？');await expect(text).toHaveValue('');
+ await expect(page.locator('.live-status-bar')).toContainText('剩约');
+ await go('pause').click();await expect(page.locator('.live-status-bar')).toContainText('时间已冻结');
+ await go('resume').click();await expect(text).toBeVisible();
  await go('hint').click();await page.locator('[data-draft-index]').click();await expect(page.locator('.messages .is-user')).toHaveCount(0);
  await text.fill(original);await go('send').click();await expect(page.locator('.live-feedback')).toContainText('请求受限');await expect(text).toHaveValue(original);await expect(page.locator('.messages')).not.toContainText('private provider response');
  await go('send').click();await expect(page.locator('.messages .is-user')).toHaveCount(1);await expect(text).toHaveValue('');

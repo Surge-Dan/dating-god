@@ -23,7 +23,7 @@ node <skill-dir>/scripts/host-session.cjs status --state <private-dir>/session.j
   "config": {
     "adult": true, "scene": "S02", "player": "unspecified", "presentation": "any",
     "mode": "spark", "seed": 7, "stage": "first", "intent": "undecided",
-    "budget": 300, "timeBudget": 90, "radarEnabled": true,
+    "budget": 300, "timeBudget": 90, "radarEnabled": false,
     "preparation": {"focus":"怎么分工","brief":"周末去拼豆"},
     "sceneSpec": {"template":"perler","place":"用户指定拼豆店","budget":50,"duration":60},
     "partnerSpec": {"name":"预演对象","interaction":{"expression":"reserved"}}
@@ -65,7 +65,7 @@ reply是自然短台词，detail是外部可见动作；自定义对象小动作
 
 ## 避雷与控制
 
-动作事实提醒在commit.reminders中。开启提醒时，自由表达提交后执行coach，取当前可见snapshot和最多12条相关rules，宿主检查原话、前提与正常反例；没问题无需打断。不能用角色态度作为违规证据。要出提示时再提交`{"candidates":[...]}`给coach校验，只展示evaluation.accepted。空候选不表示全覆盖。关闭radarEnabled则不运行。
+动作事实提醒在commit.reminders中。语义教练需显式设置`radarEnabled: true`。开启后，自由表达提交时执行coach，取当前可见snapshot和最多12条相关rules，宿主检查原话、前提与正常反例；没问题无需打断。不能用角色态度作为违规证据。要出提示时再提交`{"candidates":[...]}`给coach校验，只展示evaluation.accepted。空候选不表示全覆盖。
 
 候选含`ruleId/eventId/actor/target/category/evidenceStatus:"supported"/interpretation:"direct"/quote/premiseReason/exceptionCheck:{checked:true,applies:false,reason}`；动作需actionId，依赖前情需`premises:[{eventId,quote}]`。依据不足先澄清，不编造。角色冒犯归character，未发送草稿不记历史。这里是宿主顺序检查，不假装有独立评估模型。网页IndexedDB自查簿与聊天不自动同步，宿主不默认建立跨场负面档案。
 
@@ -73,7 +73,7 @@ control输入`{"version":1,"command":"pause"}`。支持pause/resume/end/cancel/d
 
 ## 导出与退出
 
-先end，再把用户确认的回看字段交export。selected为原场回合下标。第一人称发现用accepted、confirmed:true，没确认只生成HTML。includeNote/includeExpectation/includeExperiment需主动选择，不代用户认领发现。
+先end，再把用户确认的回看字段交export。HTML默认提供摘要，可含用户明确选中的一回合（`selected`为原场回合下标）。用户要求导出完整逐轮对话时传入`includeFull: true`。第一人称发现用accepted、confirmed:true，没确认只生成HTML。includeNote/includeExpectation/includeExperiment需主动选择，不代用户认领发现。
 
 ```text
 node <skill-dir>/scripts/host-session.cjs export --state <private-dir>/session.json --input <private-dir>/review.json --out <output-dir>

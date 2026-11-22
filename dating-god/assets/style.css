@@ -1,5 +1,19 @@
 :root {
   color-scheme: light;
+  --ink-secondary: #6E5C64;
+  --line-strong: #B9A3AB;
+  --accent-hover: #6A253D;
+  --accent-pressed: #571D32;
+  --danger-bg: #FBECEF;
+  --shadow-1: 0 1px 4px rgb(43 35 40 / 5%);
+  --shadow-2: 0 6px 20px rgb(43 35 40 / 10%);
+  --shadow-3: 0 16px 48px rgb(43 35 40 / 16%);
+  --font-display: "Songti SC", "Noto Serif CJK SC", "SimSun", serif;
+  --dur-fast: 120ms;
+  --dur-base: 160ms;
+  --dur-slow: 200ms;
+  --dur-scene: 280ms;
+  --ease-out: cubic-bezier(.2,.8,.2,1);
   --paper: #f8f5f2;
   --paper-light: #fffdfb;
   --ink: #30272b;
@@ -364,7 +378,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--rose); }
   .home-layout, .library-layout, .preparation .partner-layout { grid-template-columns: minmax(0,1fr); gap: 16px; }
   .home-scene-list { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .role-profile { position: static; max-height: none; }
-  .role-profile:not(.profile-open), .role-desktop-cta { display: none; }
+  .role-desktop-cta { display: none; }
   .role-profile.profile-open .profile-body { max-height: none; }
   .partner-preview { position: static; }
   .status { bottom: 7rem; }
@@ -708,11 +722,10 @@ svg.phosphor-icon { fill:currentColor; stroke:none; width:20px; height:20px; fle
 @media (max-width: 767px) {
   :root { line-height: 26px; }
   .home-layout, .task-goals, .prep-layout { gap: 12px; }
-  .page-nav { flex-wrap: nowrap; gap: 4px; }
-  .page-nav > div { width: auto; }
+  .page-nav { flex-wrap: wrap; gap: 0; }
+  .page-nav > div { width: 100%; }
   .page-nav .brand { font-size: 16px; }
   .page-nav button { min-width: 44px; padding-inline: 2px; }
-  .page-nav button[data-go="journal"] { display: none; }
   .filter-chips { flex-wrap: nowrap; max-width: 100%; padding: 4px; overflow-x: auto; }
   .filter-chips button { flex: none; white-space: nowrap; }
   .task-card h2 { font-size: 18px; line-height: 26px; }
@@ -745,4 +758,16 @@ svg.phosphor-icon { fill:currentColor; stroke:none; width:20px; height:20px; fle
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+.live-status-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0 0 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper-light); font-size: 13px; line-height: 20px; color: var(--ink-secondary); font-variant-numeric: tabular-nums; }
+.live-status-bar .is-warning { color: var(--warning); font-weight: 600; }
+.live-status-bar.is-paused { background: var(--warning-bg); color: var(--warning); }
+.live-status-bar .quiet { min-height: 32px; padding-block: 0; font-size: 12px; }
+.home-sample { margin: 4px 0 0; text-align: center; }
+.profile-actions { display: none; }
+@media (max-width: 767px) {
+  .role-library .role-profile { position: fixed; left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom, 0px)); top: auto; z-index: 30; max-height: 82svh; overflow: auto; border-radius: 20px; box-shadow: var(--shadow-3); transform: translateY(120%); visibility: hidden; transition: transform var(--dur-slow) var(--ease-out), visibility var(--dur-slow); }
+  .role-library .role-profile.profile-open { transform: none; visibility: visible; }
+  .role-library .role-profile .profile-body { overflow: auto; }
+  .profile-actions { display: flex; }
 }

@@ -4,6 +4,7 @@ const content = require('../assets/content.js');
 const partner = require('../assets/partner-model.js');
 const MICRO = { 'tie-hair':'TA拿出已有的发圈，把披着的长发扎起。', 'roll-sleeves':'TA把适合制作的袖口卷起。', 'adjust-glasses':'TA调整了一下眼镜。', 'drink-water':'TA拿起现场已有的水喝了一口。', 'check-time':'TA确认了一下时间。' };
 const MODES = ['mellow', 'spark', 'tension', 'hard'];
+const radarEnabled = value => value === true;
 const MAX_INPUT = 1200;
 const MAX_BODY = 32768;
 const SCHEMA = { type: 'object', properties: { reply: { type: 'string' }, detail: { type: 'string' }, actionId:{type:['string','null']} }, required: ['reply', 'detail', 'actionId'], additionalProperties: false };
@@ -221,4 +222,4 @@ function decidePartner(run,candidate,input,semantic) {
   return candidate;
 }
 
-module.exports = { MICRO, decidePartner, MODES, MAX_INPUT, MAX_BODY, SCHEMA, SEMANTIC_SCHEMA, SETUP_DEFAULTS, emptyTelemetry, LiveError, bad, conflict, copy, exactKeys, validateSetup, validateTask, rehearsalOpening, proposalActions, semanticActions, assertConsistentOutput, messagesFor, freeCandidate };
+module.exports = { MICRO, decidePartner, MODES, MAX_INPUT, MAX_BODY, SCHEMA, SEMANTIC_SCHEMA, SETUP_DEFAULTS, emptyTelemetry, LiveError, bad, conflict, copy, exactKeys, validateSetup, validateTask, rehearsalOpening, proposalActions, semanticActions, assertConsistentOutput, messagesFor, freeCandidate, radarEnabled };

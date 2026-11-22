@@ -6,7 +6,7 @@ const { createRadarEvaluator } = require('./radar-evaluator.cjs');
 const { randomUUID } = require('node:crypto');
 const engine = require('../assets/engine.js');
 const content = require('../assets/content.js');
-const { MODES, MAX_INPUT, MAX_BODY, SCHEMA, SEMANTIC_SCHEMA, SETUP_DEFAULTS, emptyTelemetry, LiveError, bad, conflict, copy, exactKeys, validateSetup, validateTask, rehearsalOpening, proposalActions, semanticActions, assertConsistentOutput, messagesFor, freeCandidate, decidePartner } = require('./turn-contract.cjs');
+const { MODES, MAX_INPUT, MAX_BODY, SCHEMA, SEMANTIC_SCHEMA, SETUP_DEFAULTS, emptyTelemetry, LiveError, bad, conflict, copy, exactKeys, validateSetup, validateTask, rehearsalOpening, proposalActions, semanticActions, assertConsistentOutput, messagesFor, freeCandidate, decidePartner, radarEnabled } = require('./turn-contract.cjs');
 
 function readProvider(env = process.env) {
   return { apiKey: env.OPENAI_API_KEY || '', model: env.OPENAI_MODEL || '', endpoint: 'https://api.openai.com/v1/chat/completions', timeoutMs: 30000 };
@@ -90,6 +90,7 @@ function createDialogueCore(options = {}) {
     const session = sessions.get(id);
     if (!session) throw new LiveError(404, 'SESSION_NOT_FOUND', '本场会话不存在或已过期，请重新开局。');
     session.touched = Date.now();
+    for (const member of sessions.values()) if (member.familyId === session.familyId) member.touched = session.touched;
     return session;
   };
   const prune = () => {
@@ -117,7 +118,12 @@ function createDialogueCore(options = {}) {
     const events=[];if(session.run.practiceRuleId)events.push({id:session.id+':opening',order:0,actor:'character',target:'user',text:session.opening.line,committed:true,status:'spoken',kind:'speech'});for(const e of session.run.events){events.push({id:e.eventId,canonicalEventId:e.canonicalEventId||e.eventId,order:events.length,actor:'user',target:'character',text:e.label,committed:true,status:e.executionStatus||'spoken',kind:e.action==='say'||e.action==='boundary'?'speech':'action',actionId:e.action,actionType:e.actionType||e.action,facts:e.radarFacts||{}});events.push({id:e.eventId+':character',order:events.length,actor:'character',target:'user',text:e.reply,committed:true,status:'spoken',kind:'speech'});}
     return {sourceType:session.run.practiceRuleId?'practice':'simulation',sessionId:session.id,branchId:session.id,activityId:engine.resolveScene(session.run)?.activityId||session.run.scene,eventId,events};
   }
-  function abort(session) { for (const controller of session.auxiliary) controller.abort(); if (session.pending) { session.pending.controller.abort(); session.pending = null; return true; } return false; }
+  function abort(session, requestId) {
+    if (requestId !== undefined && session.pending?.requestId !== requestId) return false;
+    for (const controller of session.auxiliary) controller.abort();
+    if (session.pending) { session.pending.controller.abort(); session.pending = null; return true; }
+    return false;
+  }
   async function auxiliaryReply(session, messages, controller, variant) {
     session.auxiliary.add(controller);
     const version = session.version;
@@ -164,7 +170,7 @@ function createDialogueCore(options = {}) {
       try { run = engine.createRun(cfg, input.roleId); }
       catch { throw bad('当前角色不满足成年确认、场景或对象偏好条件。'); }
       for(const key of Object.keys(SETUP_DEFAULTS)) if(!['budget','timeBudget'].includes(key))run[key] = cfg[key];
-      run.mode = cfg.mode;run.radarEnabled=cfg.radarEnabled===true;run.practiceRuleId=cfg.practiceRuleId||null;
+      run.mode = cfg.mode;run.radarEnabled=radarEnabled(cfg.radarEnabled);run.practiceRuleId=cfg.practiceRuleId||null;
       run.limit ??= Math.min(cfg.timeBudget,engine.resolveRole(run).limit);
       if(input.task)run.rehearsalTask=copy(input.task);
       let opening = rehearsalOpening(input.task);
@@ -210,6 +216,7 @@ function createDialogueCore(options = {}) {
         throw conflict('该请求正在处理或已取消，请使用新的请求编号。');
       }
       if (session.pending || session.version !== input.version || session.run.phase !== 'live') throw conflict('本场已变化、已暂停、已结束或有正在处理的回合，请先同步状态。');
+      if (session.run.events.length >= 200) throw conflict('本场已达到200回合，请散场回看。');
       let candidate;
       let deterministic = false;
       if (input.actionId) {
@@ -220,7 +227,7 @@ function createDialogueCore(options = {}) {
         candidate.events.at(-1).source = deterministic ? 'engine' : 'model';
       } else { candidate = freeCandidate(session.run, input.text.trim()); deterministic = candidate.events.at(-1).source === 'engine'; }
       const actionEvidence=input.actionId?copy(candidate.events.at(-1)):null;
-      const pending = { controller: new AbortController(), version: session.version };
+      const pending = { controller: new AbortController(), version: session.version, requestId: input.requestId };
       session.pending = pending;
       session.requests.set(input.requestId, { fingerprint });
       if (session.requests.size > 200) session.requests.delete(session.requests.keys().next().value);
@@ -349,7 +356,7 @@ function createDialogueCore(options = {}) {
         const branch = add({...copy(run),rehearsalTask:session.run.rehearsalTask}, mode, session.familyId, session.opening);
         return { ...publicState(branch), opening: copy(branch.opening) };
       }
-      const stopped = abort(session);
+      const stopped = input.command === 'cancel' ? abort(session, input.requestId) : abort(session);
       const prior = session.run;
       if (input.command === 'pause') session.run = engine.pause(prior);
       if (input.command === 'resume') session.run = engine.resume(prior);

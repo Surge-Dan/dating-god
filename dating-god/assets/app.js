@@ -54,6 +54,7 @@
           const latest=await api("/api/control",{sessionId:body.sessionId,command:"status",requestId:body.requestId});
           if(latest.committed)return latest;
           error.deliveryUncertain=Boolean(latest.pending);
+          error.syncState=latest;
         } catch(statusError) {
           if(statusError.code==="SESSION_NOT_FOUND")throw statusError;
           error.deliveryUncertain=true;
@@ -80,6 +81,15 @@
     } catch (error) {
       if (ticket !== generation) return;
       busy = false;
+      const latest=error.syncState;
+      if(latest&&session&&latest.sessionId===session.sessionId&&latest.run&&Number.isInteger(latest.version)&&latest.version>=session.version){
+        session={sessionId:latest.sessionId,version:latest.version};
+        run=latest.run;
+        radar.setContext(run);
+        radar.attach(latest.sessionId,run?.branchFrom!==null,!!run?.practiceRuleId);
+        if(latest.radar)radar.update(latest.radar);
+        if(screen==="live"&&run.phase==="ended")return finish();
+      }
       if(task&&path==="/api/session"){
         const entry={taskSetup:"task-start",preparation:"prep-auto",invitation:"meet"}[screen];
         if(entry)return connectionFailed(entry,error);
@@ -98,7 +108,7 @@
     busy = false;
     if (!session) return;
     const pending=retryTurn;
-    const requestId=task&&pending&&["cancel","pause","end"].includes(command)?pending.requestId:null;
+    const requestId=pending&&["cancel","pause","end"].includes(command)?pending.requestId:null;
     return modelRequest("/api/control", {sessionId:session.sessionId, command, ...extra,...(requestId?{requestId}:{})}, value => {
       if(value.committed&&pending?.text===utterance.trim())utterance="";
       retryTurn=null;triedTurn="";liveError="";
@@ -152,7 +162,7 @@
     if(homeConnection===null||homeConnection==="configured"&&failedScreen!==screen)return "";
     const missing=homeConnection==="unconfigured", local=homeConnection==="local-service";
     const title=failedScreen===screen&&connectionError?connectionError:missing?"自由聊天尚未连接":local?"自由聊天需要本地服务":"暂时连不到本地服务";
-    return `<aside class="connection-note" data-state="${homeConnection==="unreachable"?"error":""}" tabindex="-1"><strong>${esc(title)}</strong><p>${home?"你可以先浏览人物和场景。":"本场的设置还在。"}收尾示例使用预设选项。</p><div class="buttons connection-actions">${button("connection-help","查看连接方式","quiet")}${!home&&failedScreen===screen&&!missing&&!local?button("retry-connection","重试连接","quiet"):""}${button("offline-practice","看收尾演练示例")}</div></aside>`;
+    return `<aside class="connection-note" data-state="${homeConnection==="unreachable"?"error":""}" tabindex="-1"><strong>${esc(title)}</strong><p>${home?"你可以先浏览人物和场景。":"本场的设置还在。收尾示例使用预设选项。"}</p><div class="buttons connection-actions">${button("connection-help","查看连接方式","quiet")}${!home&&failedScreen===screen&&!missing&&!local?button("retry-connection","重试连接","quiet"):""}${home?"":button("offline-practice","看收尾演练示例")}</div></aside>`;
   }
   function connectionFailed(entry,error){
     failedEntry=entry;
@@ -377,6 +387,7 @@
         <article class="start-panel task-card"><span class="task-tag">赴约前预演</span><h2>我快要去约会了</h2><p>按你的情况选对象和地点，练完带走一张赴约清单。</p>${button("new-rehearsal","准备这次见面","primary")}</article>
         <article class="practice-slip task-card"><span class="task-tag">约会能力练习</span><h2>我想练一个约会瞬间</h2><p>比如TA说还有事，你怎么收尾？练完带走一句可以重试的话。</p>${button("new-practice","挑一个想练的时刻")}</article>
       </div>
+      <p class="home-sample">${button("offline-practice","先看一个2分钟的收尾示例 →","quiet")}</p>
       <aside class="review-preview" aria-label="复盘预览"><header><h2>复盘长这样</h2><p>示例 · 公园散步</p></header><blockquote><p><strong>TA</strong> 我得先走了，晚点还有事。</p><p><strong>你</strong> 这么快啊，不能再走会儿吗？</p></blockquote><p class="preview-takeaway"><strong>下次可试</strong> 好呀，今天聊得挺开心。下次有空再散步。</p></aside>
       <div id="home-connection">${connectionOptions(true)}</div>
       <section class="home-scenes" aria-labelledby="home-scenes-title">
@@ -446,6 +457,7 @@
         <div class="profile-top">${avatar(selected,true)}<div><h2 tabindex="-1">${esc(selected.name)}</h2><p>${selected.age}岁 · ${esc(roleLabels[selected.presentation])}</p></div></div>
         <div class="profile-body"><p>${esc(selected.bio)}</p><blockquote>“${esc(selected.greeting)}”</blockquote>
         <dl><dt>兴趣</dt><dd>${esc(selected.interests.map(id=>library.interests[id]).filter(Boolean).join("、"))}</dd><dt>常见场景</dt><dd>${esc(selected.scenes.map(id=>engine.sceneById(id)?.name).filter(Boolean).join("、"))}</dd><dt>适合模式</dt><dd>${esc((selected.modes||Object.keys(modes)).map(id=>modes[id]).join("、"))}</dd></dl></div>
+        <div class="buttons profile-actions">${button("role-list-close","收起档案","quiet")}${button("choose-role-profile",chooseLabel,"primary")}</div>
         </aside>`:'<aside class="role-profile role-placeholder" id="role-details"><h2>先选一位角色</h2><p>点按角色卡，查看开场方式与适合的场景。</p></aside>'}</div>
       ${selected?selectionBar("role-confirm-bar",selected.name,outside?"当前筛选未显示":"","choose-role",chooseLabel,{extra:button("role-list",roleDetailOpen?"收起档案":"查看档案","quiet")}):""}
     </section>`;
@@ -778,7 +790,7 @@
         <div class="buttons">
           ${button("radar-coach", "场外教练", "quiet")}${modelMode ? button("radar-preflight", "检查这句草稿", "quiet") : ""}
           ${Object.keys(modes).indexOf(run.mode || config.mode)>0 ? button("lower-mode", "降低强度", "quiet") : ""}
-          ${button("end", "提前散场", "quiet danger")}${button("reset", "退出并清空本场", "quiet danger")}
+          ${button("end", "结束并复盘", "quiet danger")}${button("reset", "清空本场", "quiet danger")}
         </div>
       </div>
       <div id="radar-host"></div>
@@ -786,6 +798,17 @@
     </section>`;
   }
 
+  function liveStatusBar(){
+    const role=engine.resolveRole(run);
+    const initialScene=engine.resolveScene(run,run.initialScene||run.scene);
+    const limit=run.limit??role.limit;
+    const remaining=Math.max(0,limit-run.elapsed);
+    const budget=run.budget===null||run.budget===undefined?null:Math.max(0,run.budget-(run.spent||0));
+    const mode=run.mode||config.mode;
+    const paused=run.phase==="paused";
+    const canLower=!busy&&!retryTurn?.uncertain&&!sessionExpired&&Object.keys(modes).indexOf(mode)>0;
+    return `<div class="live-status-bar${paused?" is-paused":""}" aria-label="本场状态"><span>${esc(sceneName(run.scene))}</span><span>${timeLabel(initialScene,run.elapsed)}</span><span class="${!paused&&remaining<=10?"is-warning":""}">${paused?"时间已冻结":`剩约${remaining}分钟`}</span>${budget!==null?`<span class="${budget<=run.budget*0.2?"is-warning":""}">预算剩¥${budget}</span>`:""}<span>${modes[mode]}</span>${canLower?button("lower-mode","降低强度","quiet"):""}</div>`;
+  }
   function conversationView(){
     const role=engine.resolveRole(run);
     const paused=run.phase==="paused";
@@ -793,8 +816,11 @@
     const actions=engine.choices(run).filter(item=>item.id!=="leave");
     const stationChoices=run.pendingStation?actions.filter(item=>["station-confirm","station-cancel"].includes(item.id)):[];
     const controls=actions.filter(item=>!stationChoices.includes(item));
+    const stationOffers=controls.filter(item=>item.id.startsWith("station:"));
+    const inlineActions=controls.filter(item=>!item.id.startsWith("station:"));
     const bubble=(who,text)=>`<div class="chat-bubble ${who==="你"?"is-user":""}"><small>${who}</small><p>${esc(text)}</p></div>`;
     return `<section class="panel live-panel natural-chat"><header class="section-head"><div><p class="meta">${run.branchFrom===null?"约会预演":"从原场再练"} · ${run.events.length}回合</p><h1 tabindex="-1">${esc(role.name)} · ${esc(run.location)}</h1><p class="meta">${esc(run.rehearsalTask.goal)}</p></div>${paused||sessionExpired?"":button("pause","暂停","quiet")}</header>
+      ${liveStatusBar()}
       <div class="messages" aria-label="本场对话">
       ${modelOpening?.detail?`<p class="scene-note">${esc(modelOpening.detail)}</p>`:""}
       ${modelOpening?.line?bubble("TA",modelOpening.line):""}
@@ -810,8 +836,9 @@
         <div class="suggestion-list">${suggestions.map((line,index)=>`<button type="button" data-draft-index="${index}" aria-pressed="${selectedDraft===index}"${busy?" disabled":""}>${esc(line)}</button>`).join("")}</div>
         <p class="subline">「帮我顺一句」会把当前草稿交给服务。</p>${button("polish",polishRequest?"正在整理…":"帮我顺一句","quiet")}
         ${polish?`<p>你的原句：${esc(polish.source)}</p><p>建议：${esc(polish.line)}</p>${polish.source===utterance?`<div class="buttons">${button("apply-polish","换成这句")}${button("dismiss-polish","保留原文","quiet")}</div>`:`<p class="meta">草稿已修改，这条建议对应之前的文字。</p>`}`:""}</aside>`:""}</div>`}
-      ${!paused&&!sessionExpired&&controls.length?`<details class="setup-details"><summary>现场可以做什么</summary><div class="buttons">${controls.map(item=>`<button type="button" data-confirm-action="${esc(item.id)}"${busy?" disabled":""}>${esc(item.label)}</button>`).join("")}</div></details>`:""}
-      <div class="buttons">${button("request-end",sessionExpired?"查看本页已确认对话":"结束并复盘","quiet")}${button("reset","删除本场会话","quiet danger")}</div></section>`;
+      ${!paused&&!sessionExpired&&inlineActions.length?`<details class="setup-details"><summary>现场可以做什么</summary><div class="buttons">${inlineActions.map(item=>`<button type="button" data-confirm-action="${esc(item.id)}"${busy?" disabled":""}>${esc(item.label)}</button>`).join("")}</div></details>`:""}
+      ${!paused&&!sessionExpired&&stationOffers.length?`${button("open-stations","提议换个地方…","quiet")}<dialog class="content-dialog" id="stations" aria-label="提议换个地方"><h2>提议换个地方</h2><p>这里只列出本场时间和预算允许的活动。先提出，双方再确认出发。</p><div class="steps">${stationOffers.map(item=>`<button type="button" data-confirm-action="${esc(item.id)}"${busy?" disabled":""}>${esc(item.label)}</button>`).join("")}</div>${button("close-content","返回现场","quiet")}</dialog>`:""}
+      <div class="buttons">${button("request-end",sessionExpired?"查看本页已确认对话":"结束并复盘","quiet")}${button("reset","清空本场","quiet danger")}</div></section>`;
   }
 
   function currentSuggestions(){
@@ -830,7 +857,7 @@
       ${report.evidenceReport(original,alternative,analysis,{...checklist,claimedAction:checklist.claimedAction??item?.alternative,pending:reportLoading,actions:true,canReplay:!sessionExpired})}
       <div id="report-feedback">${reportFeedback()}</div>
       <p class="subline">保存摘要会写入当前浏览器，包含练习目标、场景和一条本场观察。</p>
-      <div class="buttons report-toolbar">${button("open-export","导出报告","primary")}${button("save-evidence","保存摘要")}${original.events.length?button("open-transcript","查看完整对话","quiet"):""}${task.kind==="rehearsal"?button("open-checklist","编辑赴约清单","quiet"):""}${button("retry-task","按原设定再试","quiet")}${button("reset","删除本场会话","quiet danger")}</div>
+      <div class="buttons report-toolbar">${button("open-export","导出报告","primary")}${button("save-evidence","保存摘要")}${original.events.length?button("open-transcript","查看完整对话","quiet"):""}${task.kind==="rehearsal"?button("open-checklist","编辑赴约清单","quiet"):""}${button("retry-task","按原设定再试","quiet")}${button("reset","清空本场","quiet danger")}</div>
       <dialog id="export-options" aria-label="导出报告" class="content-dialog"><h2>导出报告</h2><p>默认下载复盘摘要。你可以选择带上完整对话或私人便笺。</p>
         ${check("includeFull","包含完整对话",includeFull)}
         <label class="field">私人便笺<textarea name="note" maxlength="320">${esc(draft.note)}</textarea></label>
@@ -914,7 +941,7 @@
         <label class="field"><span class="sr-only">我想带走的一句话（可选）</span><input type="text" name="accepted" value="${esc(draft.accepted)}" maxlength="96" placeholder="按自己的话写，可以留空"></label>
         ${check("confirmed", "这句话是我认领的发现，可用于报告和Dating卡", draft.confirmed)}</section>
       </div>
-      <div class="buttons">${button("final", "查看这场回看", "primary")}${button("save-home", "结束并保存已完成摘要")}${button("reset", "结束并清空这场", "quiet danger")}</div>
+      <div class="buttons">${button("final", "查看这场回看", "primary")}${button("save-home", "结束并保存已完成摘要")}${button("reset", "清空本场", "quiet danger")}</div>
       <div id="radar-host"></div>
     </section>`;
   }
@@ -951,10 +978,11 @@
       </section>
       ${original.events.length?button("open-legacy-transcript","查看完整对话","quiet"):"<p>这场还没有可引用的互动。</p>"}
       ${alternative?`<section class="record-details"><h2>实际重演 · 第${alternative.branchFrom+1}回合</h2><p>${esc(alternative.outcome)}</p></section>`:""}
+      ${original.events.length?check("includeFull","HTML 回看包含完整对话（默认仅摘要）",includeFull):""}
       <div class="buttons report-actions">${button("download-report", "下载 HTML 回看", "primary")}
         ${approved ? button("download-card", "下载 Dating 卡（SVG）") : ""}
         ${button("review","返回调整","quiet")}
-        ${button("reset","结束并清空这场","quiet danger")}
+        ${button("reset","清空本场","quiet danger")}
       </div>
       <section class="record-details"><h2>本场提醒</h2><div id="radar-host"></div><div class="buttons">${button("save-home","结束并保存已完成摘要")}</div></section>
     </section>`;
@@ -1105,7 +1133,7 @@
     if(!config.adult){show("preferences","先确认已年满18岁，再进入独立模型练习。");return;}
     const role=engine.match(config)[0];if(role)startDate(role);else show("preferences","请调整活动与对象偏好。");
   }
-  function practiceReview(){return `<section><h1>这一小段，先练到这里</h1><p>独立练习只记录本次言行，不据此认定已经改好。</p>${run.events.map(e=>`<p>你：${esc(e.label)}</p><p>TA：${esc(e.reply)}</p>`).join("")}<div id="radar-host"></div>${button("save-home","结束并保存已完成摘要")}${button("reset","结束并清空这场")}</section>`;}
+  function practiceReview(){return `<section><h1>这一小段，先练到这里</h1><p>独立练习只记录本次言行，不据此认定已经改好。</p>${run.events.map(e=>`<p>你：${esc(e.label)}</p><p>TA：${esc(e.reply)}</p>`).join("")}<div id="radar-host"></div>${button("save-home","结束并保存已完成摘要")}${button("reset","清空本场")}</section>`;}
   function finish() {
     if(task&&run.rehearsalTask){
       if(run.branchFrom===null){original=run;primarySessionId=session?.sessionId;}
@@ -1946,6 +1974,7 @@
         if(picker)returnFromPicker(true);else show("taskSetup");
         break;
       }
+      case "choose-role-profile":
       case "choose-role": {
         const role=library.roles.find(item=>item.id===selectedRoleId);
         if(!role){status.textContent="先从列表里选一位角色。";break;}
@@ -1961,10 +1990,13 @@
         if(picker)returnFromPicker(true);else show("taskSetup");
         break;
       }
+      case "role-list-close":
       case "role-list":
-        roleDetailOpen=!roleDetailOpen;refreshRoles();
-        if (roleDetailOpen) app.querySelector("#role-details")?.scrollIntoView?.({block:"nearest"});
-        app.querySelector('#role-confirm-bar [data-go="role-list"]')?.focus({preventScroll:true});
+        roleDetailOpen=go==="role-list"&&!roleDetailOpen;refreshRoles();
+        if(roleDetailOpen){
+          app.querySelector("#role-details")?.scrollIntoView?.({block:"nearest"});
+          app.querySelector("#role-details h2")?.focus({preventScroll:true});
+        }else app.querySelector('#role-confirm-bar [data-go="role-list"]')?.focus({preventScroll:true});
         break;
       case "clear-role-search":
         roleSearch=roleGender=roleTrait="";roleDetailOpen=false;roleLimit=12;
@@ -2053,6 +2085,7 @@
       case "send": if (utterance.trim()||retryTurn?.uncertain) return sendModel({text:utterance.trim()}); break;
       case "cancel": return control("cancel");
       case "lower-mode": {
+        if(busy||retryTurn?.uncertain||sessionExpired)break;
         const index = Object.keys(modes).indexOf(run.mode || config.mode);
         if (index <= 0) break;
         const mode = Object.keys(modes)[index-1];
@@ -2156,7 +2189,7 @@
           ? "卡片需要你自己的发现。请选择一个回合或留一句便笺，移除称呼、联系信息和角色原话。" : "");
         break;
       case "download-report":
-        download(report.html(original, alternative, exportDraft()), "散场之后.html", "text/html;charset=utf-8");
+        download(report.html(original, alternative, {...exportDraft(), full:includeFull}), "散场之后.html", "text/html;charset=utf-8");
         break;
       case "download-card": {
         const image = report.card(original, cardOptions(), alternative);

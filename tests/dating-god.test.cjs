@@ -115,7 +115,9 @@ test("reports escape user data and only include opted-in and confirmed reflectio
   const html = report.html(run, null, draft);
   assert.doesNotMatch(html, /onerror|我想先试一个小动作|陈诺/);
   assert.doesNotMatch(html, /一条只留给自己的期待/);
-  assert.match(html, /杯沿/);
+  assert.match(html, /默认仅下载摘要/);
+  assert.doesNotMatch(html, /<ol>/);
+  assert.match(report.html(run, null, { ...draft, includeFull: true }), /杯沿/);
   assert.equal(report.card(run, draft), null);
   const approved = { ...draft, confirmed: true, includeNote: true, includeExpectation: true };
   const approvedHtml = report.html(run, null, approved);
